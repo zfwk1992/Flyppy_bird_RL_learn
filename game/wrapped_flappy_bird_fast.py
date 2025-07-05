@@ -2,13 +2,13 @@ import numpy as np
 import sys
 import random
 import pygame
-import flappy_bird_utils
+from . import flappy_bird_utils
 import pygame.surfarray as surfarray
 from pygame.locals import *
 from itertools import cycle
 
 # 🚀 优化配置 - 提高游戏存活时间
-FPS = 30  # 降低FPS减少CPU负载
+FPS = 500  # 降低FPS减少CPU负载
 SCREENWIDTH  = 288
 SCREENHEIGHT = 512
 
@@ -20,7 +20,7 @@ pygame.display.set_caption('Flappy Bird - Fast Training')
 IMAGES, SOUNDS, HITMASKS = flappy_bird_utils.load()
 
 # 🎯 优化游戏参数 - 提高存活时间
-PIPEGAPSIZE = 120  # 增加管道开口 (原100)
+PIPEGAPSIZE = 150  # 增加管道开口 (原100)
 BASEY = SCREENHEIGHT * 0.79
 
 PLAYER_WIDTH = IMAGES['player'][0].get_width()
@@ -53,12 +53,12 @@ class GameState:
         ]
 
         # 🚀 优化物理参数 - 让游戏更容易
-        self.pipeVelX = -2
+        self.pipeVelX = -5
         self.playerVelY    =  0    # 当前Y轴速度
-        self.playerMaxVelY =  8    # 最大下降速度 (原10)
-        self.playerMinVelY =  -8   # 最大上升速度
-        self.playerAccY    =  0.6  # 重力加速度 (原1) - 降低重力
-        self.playerFlapAcc =  -8   # 跳跃时的向上加速度 (原-9) - 增加上升力
+        self.playerMaxVelY =  5    # 最大下降速度 (原10)
+        self.playerMinVelY =  -5   # 最大上升速度
+        self.playerAccY    =  0.5  # 重力加速度 (原1) - 降低重力
+        self.playerFlapAcc =  -5   # 跳跃时的向上加速度 (原-9) - 增加上升力
         self.playerFlapped = False # True when player flaps
 
     def frame_step(self, input_actions):
