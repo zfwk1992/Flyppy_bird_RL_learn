@@ -68,7 +68,7 @@ class OptimizedDQN(nn.Module):
         
         # 全连接层规模减小
         self.fc1 = nn.Linear(64 * 4 * 4, 1024)  # 只保留卷积输出
-        self.fc2 = nn.Linear(1024, actions)
+        self.fc2 = nn.Linear(1024, actions * 3)  # 输出变为3步动作Q值
 
         # 初始化权重
         self._initialize_weights()
@@ -96,7 +96,7 @@ class OptimizedDQN(nn.Module):
         x_flat = x.reshape(x.size(0), -1)
         x = F.relu(self.fc1(x_flat))
         x = self.fc2(x)
-        return x
+        return x.view(x.size(0), 3, self.fc2.out_features // 3)  # [batch, 3, actions]
 
 class OptimizedDQNAgent:
     """优化版DQN智能体"""
@@ -174,14 +174,20 @@ class OptimizedDQNAgent:
         
         return action
     
+    def select_actions(self, state_tensor):
+        with torch.no_grad():
+            q_values = self.q_network(state_tensor)  # [1, 3, actions]
+            actions = q_values[0].argmax(dim=1).cpu().numpy()  # [3]
+        return actions  # 返回未来3步动作
+    
     def store_transition(self, state, action, reward, next_state, terminal):
         """存储经验"""
         self.trajectory_buffer.append((state, action, reward, next_state, terminal))
-        if len(self.trajectory_buffer) == 50:  # 这里改为50
-            self.memory.append(list(self.trajectory_buffer))  # 存一段连续轨迹
-            self.trajectory_buffer.pop(0)  # 滑动窗口
+        if len(self.trajectory_buffer) == 3:
+            self.memory.append(list(self.trajectory_buffer))  # 存3步轨迹
+            self.trajectory_buffer.pop(0)
         if terminal:
-            self.trajectory_buffer.clear()  # 游戏结束清空
+            self.trajectory_buffer.clear()
     
     def train(self):
         """优化的训练方法"""
@@ -198,35 +204,42 @@ class OptimizedDQNAgent:
         terminals = []
 
         for traj in batch:
-            states.append(traj[0][0])          # 首状态
-            actions.append(traj[0][1])         # 首动作
-            # n步累计奖励
-            R = 0
-            for i in range(len(traj)):
-                R += (GAMMA ** i) * traj[i][2]
-            rewards.append(R)
-            next_states.append(traj[-1][3])    # 最后一步的 next_state
-            terminals.append(traj[-1][4])      # 最后一步的 terminal
+            states.append(traj[0][0])                  # 首状态
+            actions.append([traj[i][1] for i in range(3)])   # 3步动作
+            rewards.append([traj[i][2] for i in range(3)])   # 3步奖励
+            next_states.append([traj[i][3] for i in range(3)])  # 3步next_state
+            terminals.append([traj[i][4] for i in range(3)])    # 3步terminal
 
-        # 转为tensor
         states = torch.FloatTensor(states).to(device)
-        actions = torch.LongTensor(actions).to(device)
-        rewards = torch.FloatTensor(rewards).to(device)
-        next_states = torch.FloatTensor(next_states).to(device)
-        terminals = torch.BoolTensor(terminals).to(device)
+        actions = torch.LongTensor(actions).to(device)      # [batch, 3]
+        rewards = torch.FloatTensor(rewards).to(device)     # [batch, 3]
+        next_states = torch.FloatTensor(next_states).to(device) # [batch, 3, 80, 80, 4]
+        terminals = torch.BoolTensor(terminals).to(device)      # [batch, 3]
 
-        # 调整维度顺序
         states = states.permute(0, 3, 1, 2)
-        next_states = next_states.permute(0, 3, 1, 2)
+        next_states = next_states.permute(0, 1, 4, 2, 3)    # [batch, 3, 4, 80, 80]
+        next_states_flat = next_states.reshape(-1, 4, 80, 80)  # [batch*3, 4, 80, 80]
+        q_next_flat = self.q_network(next_states_flat)          # [batch*3, 3, actions]
+        # 只取每个样本的第0步Q值（因为每个next_state只对应一步）
+        q_next = q_next_flat[:, 0, :]                          # [batch*3, actions]
+        next_actions = q_next.argmax(1).view(actions.shape[0], 3)  # [batch, 3]
 
         # 计算当前Q值
-        current_q_values = self.q_network(states).gather(1, actions.unsqueeze(1))
+        q_pred = self.q_network(states)  # [batch, 3, actions]
+        actions = actions.unsqueeze(-1)  # [batch, 3, 1]
+        current_q_values = q_pred.gather(2, actions).squeeze(-1)  # [batch, 3]
 
         # 计算目标Q值 - 使用Double DQN
         with torch.no_grad():
-            next_actions = self.q_network(next_states).argmax(1)
-            next_q_values = self.target_network(next_states).gather(1, next_actions.unsqueeze(1))
-            target_q_values = rewards + (GAMMA ** len(traj)) * next_q_values.squeeze() * ~terminals
+            # next_states: [batch, 3, 4, 80, 80]
+            next_states_flat = next_states.reshape(-1, 4, 80, 80)  # [batch*3, 4, 80, 80]
+            q_next_flat = self.target_network(next_states_flat)    # [batch*3, 3, actions]
+            q_next = q_next_flat[:, 0, :]                         # [batch*3, actions]
+            next_actions = q_next.argmax(1).view(actions.shape[0], 3)  # [batch, 3]
+
+            # 计算目标Q值
+            q_next_max = q_next.max(1)[0].view(actions.shape[0], 3)    # [batch, 3]
+            target_q_values = rewards + (GAMMA * q_next_max * (~terminals))
 
         loss = F.huber_loss(current_q_values.squeeze(), target_q_values)
 
@@ -353,18 +366,20 @@ def train_network():
     episode_count = 0
     
     # 训练循环
+    action_queue = []
     while "flappy bird" != "angry bird":
         # 获取状态tensor
         state_tensor = agent.get_state_tensor(s_t)
         
         # 每FRAME_PER_ACTION帧采取一次动作
         if frame_count % FRAME_PER_ACTION == 0:
-            # 选择动作
-            action_index = agent.select_action(state_tensor)
+            if len(action_queue) == 0:
+                actions = agent.select_actions(state_tensor)  # 预测未来3步
+                action_queue = list(actions)
+            action_index = action_queue.pop(0)
             a_t = np.zeros([ACTIONS])
             a_t[action_index] = 1
         else:
-            # 其他帧保持上一个动作
             a_t = np.zeros([ACTIONS])
             a_t[action_index] = 1
         
