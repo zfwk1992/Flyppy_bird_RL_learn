@@ -154,11 +154,13 @@ class DQNAgent:
         dones = torch.BoolTensor([e[4] for e in batch]).to(device)
         
         # 当前Q值
-        current_q = self.q_network(states).gather(1, actions.unsqueeze(1))
+        current_q_values = self.q_network(states)
+        current_q = current_q_values.gather(1, actions.unsqueeze(1))
         
         # 目标Q值 (Double DQN)
         with torch.no_grad():
-            next_actions = self.q_network(next_states).max(1)[1]
+            next_q_values = self.q_network(next_states)
+            next_actions = next_q_values.max(1)[1]
             next_q = self.target_network(next_states).gather(1, next_actions.unsqueeze(1))
             target_q = rewards.unsqueeze(1) + (GAMMA * next_q * ~dones.unsqueeze(1))
         
@@ -171,7 +173,19 @@ class DQNAgent:
         torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), 1.0)
         self.optimizer.step()
         
-        return loss.item()
+        # 返回训练统计信息
+        train_stats = {
+            'loss': loss.item(),
+            'current_q_mean': current_q.mean().item(),
+            'current_q_max': current_q.max().item(),
+            'current_q_min': current_q.min().item(),
+            'target_q_mean': target_q.mean().item(),
+            'reward_mean': rewards.mean().item(),
+            'q_values_action0': current_q_values[:, 0].mean().item(),
+            'q_values_action1': current_q_values[:, 1].mean().item()
+        }
+        
+        return train_stats
     
     def update_target_network(self):
         """软更新目标网络"""
@@ -248,11 +262,11 @@ def main():
             
             # 训练网络
             if agent.step > OBSERVE:
-                loss = agent.train()
+                train_stats = agent.train()
                 agent.update_target_network()
                 
                 # 记录训练信息
-                if agent.step % 1000 == 0:
+                if agent.step % 1000 == 0 and train_stats is not None:
                     avg_reward = np.mean(agent.reward_history[-100:]) if agent.reward_history else 0
                     if agent.step < OBSERVE:
                         status = f"观察期 {agent.step}/{OBSERVE}"
@@ -260,8 +274,11 @@ def main():
                         status = f"探索期 {agent.step}/{OBSERVE + EXPLORE}"
                     else:
                         status = "利用期"
-                    logging.info(f"[{status}] 步数: {agent.step} | ε: {agent.epsilon:.4f} | "
-                               f"损失: {loss:.4f} | 平均奖励: {avg_reward:.2f} | 最高分: {max_score}")
+                    logging.info(f"[{status}] 步数: {agent.step} | ε: {agent.epsilon:.4f}")
+                    logging.info(f"  损失: {train_stats['loss']:.4f} | 平均奖励: {avg_reward:.3f} | 最高分: {max_score:.3f}")
+                    logging.info(f"  Q值 - 平均: {train_stats['current_q_mean']:.3f} | 最大: {train_stats['current_q_max']:.3f} | 最小: {train_stats['current_q_min']:.3f}")
+                    logging.info(f"  动作Q值 - 不跳: {train_stats['q_values_action0']:.3f} | 跳跃: {train_stats['q_values_action1']:.3f}")
+                    logging.info(f"  目标Q值: {train_stats['target_q_mean']:.3f} | 批次奖励: {train_stats['reward_mean']:.3f}")
             
             # 更新探索率
             agent.update_epsilon()
@@ -286,7 +303,7 @@ def main():
                 status = "利用期"
             
             logging.info(f"游戏 {episode_count} 结束 | 步数: {agent.step} | {status} | "
-                        f"得分: {episode_reward:.1f} | 最高分: {max_score:.1f} | ε: {agent.epsilon:.4f}")
+                        f"得分: {episode_reward:.3f} | 最高分: {max_score:.3f} | ε: {agent.epsilon:.4f}")
             
             episode_reward = 0
             

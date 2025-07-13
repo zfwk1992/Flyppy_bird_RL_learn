@@ -39,6 +39,7 @@ PLAYER_INDEX_GEN = cycle([0, 1, 2, 1])
 class GameState:
     def __init__(self):
         self.score = self.playerIndex = self.loopIter = 0
+        self.survival_frames = 0  # 🎯 添加存活时间计数器
         self.playerx = int(SCREENWIDTH * 0.2)
         # 🎯 提高初始高度
         self.playery = int((SCREENHEIGHT - PLAYER_HEIGHT) / 2) - 20
@@ -68,7 +69,14 @@ class GameState:
     def frame_step(self, input_actions):
         pygame.event.pump()
 
-        reward = 0.01
+        # 🎯 增加存活时间计数器
+        self.survival_frames += 1
+        
+        # 🎯 递增存活奖励机制：每2帧后奖励增加0.002（修正版）
+        base_survival_reward = 0.01
+        bonus_reward = (self.survival_frames // 2) * 0.002
+        reward = base_survival_reward + bonus_reward
+        
         terminal = False
 
         if sum(input_actions) != 1:
