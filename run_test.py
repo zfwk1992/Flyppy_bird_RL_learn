@@ -55,12 +55,12 @@ def main():
     
     print("\n🚀 启动AI游戏测试...")
     
-    # 运行测试脚本，指定加载bird-dqn-oneStep-200.pth模型
+    # 运行测试脚本，指定加载bird-dqn-oneStep-300.pth模型
     try:
         result = subprocess.run([
             sys.executable, 
             "test/test_ai_gameplay.py",
-            "--model", "saved_networks/bird-dqn-oneStep-200.pth",
+            "--model", "saved_networks/bird-dqn-oneStep-300.pth",
             "--fps", "60"
         ], cwd=script_dir)
         return result.returncode
