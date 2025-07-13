@@ -1,11 +1,15 @@
 import numpy as np
 import sys
 import random
+import os
 import pygame
 from . import flappy_bird_utils
 import pygame.surfarray as surfarray
 from pygame.locals import *
 from itertools import cycle
+
+# Set headless mode before pygame init
+os.environ['SDL_VIDEODRIVER'] = 'dummy'
 
 # 🚀 优化配置 - 提高游戏存活时间
 FPS = 500  # 降低FPS减少CPU负载
@@ -64,7 +68,7 @@ class GameState:
     def frame_step(self, input_actions):
         pygame.event.pump()
 
-        reward = 0.1
+        reward = 0.01
         terminal = False
 
         if sum(input_actions) != 1:
@@ -85,7 +89,7 @@ class GameState:
             if pipeMidPos <= playerMidPos < pipeMidPos + 4:
                 self.score += 1
                 #SOUNDS['point'].play()
-                reward = 1
+                reward = 5
 
         # playerIndex basex change
         if (self.loopIter + 1) % 3 == 0:

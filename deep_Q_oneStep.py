@@ -27,7 +27,7 @@ if torch.cuda.is_available():
 GAME = 'bird'
 ACTIONS = 2
 GAMMA = 0.99
-OBSERVE = 3000
+OBSERVE = 1000
 EXPLORE = 20000
 FINAL_EPSILON = 0.001
 REPLAY_MEMORY = 20000
@@ -88,7 +88,7 @@ class FixedOptimizedDQN(nn.Module):
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         x = self.adaptive_pool(x)
-        x = x.view(x.size(0), -1)
+        x = x.reshape(x.size(0), -1)
         x = F.relu(self.fc1(x))
         x = self.fc2(x)
         return x  # [batch, actions]
@@ -106,7 +106,7 @@ class DQNAgent:
         self.target_network.load_state_dict(self.q_network.state_dict())
         
         # 优化器
-        self.optimizer = optim.AdamW(self.q_network.parameters(), lr=1e-4, weight_decay=1e-5)
+        self.optimizer = optim.AdamW(self.q_network.parameters(), lr=1e-3, weight_decay=1e-5)
         
         # 经验回放缓冲区
         self.memory = deque(maxlen=REPLAY_MEMORY)
@@ -175,7 +175,7 @@ class DQNAgent:
     
     def update_target_network(self):
         """软更新目标网络"""
-        if self.step % 1000 == 0:
+        if self.step % 100 == 0:
             self.target_network.load_state_dict(self.q_network.state_dict())
     
     def update_epsilon(self):
@@ -239,10 +239,12 @@ def main():
         
         episode_reward += r_t
         
+        # 每帧都增加步数
+        agent.step += 1
+        
         # 只在决策帧存储经验
         if agent.step % FRAME_PER_ACTION == 0:
             agent.store_transition(s_t, action_index, r_t, s_t1, terminal)
-            agent.step += 1
             
             # 训练网络
             if agent.step > OBSERVE:
@@ -252,9 +254,14 @@ def main():
                 # 记录训练信息
                 if agent.step % 1000 == 0:
                     avg_reward = np.mean(agent.reward_history[-100:]) if agent.reward_history else 0
-                    logging.info(f"步数: {agent.step}, ε: {agent.epsilon:.4f}, "
-                               f"损失: {loss:.4f}, 平均奖励: {avg_reward:.2f}, "
-                               f"最高分数: {max_score}")
+                    if agent.step < OBSERVE:
+                        status = f"观察期 {agent.step}/{OBSERVE}"
+                    elif agent.step < OBSERVE + EXPLORE:
+                        status = f"探索期 {agent.step}/{OBSERVE + EXPLORE}"
+                    else:
+                        status = "利用期"
+                    logging.info(f"[{status}] 步数: {agent.step} | ε: {agent.epsilon:.4f} | "
+                               f"损失: {loss:.4f} | 平均奖励: {avg_reward:.2f} | 最高分: {max_score}")
             
             # 更新探索率
             agent.update_epsilon()
@@ -270,8 +277,16 @@ def main():
             if episode_reward > max_score:
                 max_score = episode_reward
                 
-            logging.info(f"游戏 {episode_count} 结束, 得分: {episode_reward}, "
-                        f"最高分: {max_score}, 当前ε: {agent.epsilon:.4f}")
+            # 计算训练状态
+            if agent.step < OBSERVE:
+                status = f"观察期 ({agent.step}/{OBSERVE})"
+            elif agent.step < OBSERVE + EXPLORE:
+                status = f"探索期 ({agent.step}/{OBSERVE + EXPLORE})"
+            else:
+                status = "利用期"
+            
+            logging.info(f"游戏 {episode_count} 结束 | 步数: {agent.step} | {status} | "
+                        f"得分: {episode_reward:.1f} | 最高分: {max_score:.1f} | ε: {agent.epsilon:.4f}")
             
             episode_reward = 0
             
@@ -284,9 +299,18 @@ def main():
         
         # 阶段提示
         if agent.step == OBSERVE:
-            logging.info("观察阶段结束，开始探索和训练...")
+            logging.info("🎯 重要节点：观察期结束，开始DQN训练！预期得分开始提升...")
         elif agent.step == OBSERVE + EXPLORE:
-            logging.info("探索阶段结束，进入稳定训练...")
+            logging.info("🎯 重要节点：探索期结束，进入利用期！网络已充分学习...")
+        
+        # 定期提示进度
+        if agent.step % 5000 == 0 and agent.step > 0:
+            if agent.step < OBSERVE:
+                remaining = OBSERVE - agent.step
+                logging.info(f"📊 观察期进度：还需 {remaining} 步开始训练")
+            elif agent.step < OBSERVE + EXPLORE:
+                remaining = OBSERVE + EXPLORE - agent.step
+                logging.info(f"📊 探索期进度：还需 {remaining} 步进入利用期")
 
 
 if __name__ == "__main__":
