@@ -170,21 +170,22 @@ episode_reward += r_t  # 每帧累加
 ### 训练阶段和ε衰减
 
 #### 三个训练阶段 (优化后)
-1. **观察期** (0-1000步): - **已缩短67%**
+1. **观察期** (0-10000步): - **扩展观察期增强基础**
    - ε = 1.0 (100%随机行动)
    - 只收集经验，不训练网络
-   - 约25局游戏，快速建立经验回放缓冲区
+   - 约250局游戏，充分建立经验回放缓冲区
+   - **阶段性目标网络**: 仅使用最佳网络保持稳定参考
 
-2. **探索期** (1000-21000步):
+2. **探索期** (10000-40000步):
    - ε从1.0线性衰减到0.001
    - 开始DQN训练，逐渐使用网络预测
-   - 约500局游戏，网络学习策略
-   - **更频繁的目标网络更新** (每100步)
+   - 约750局游戏，网络学习策略
+   - **前500步强制最佳网络** + **智能目标网络选择**
 
-3. **利用期** (21000步后):
+3. **利用期** (40000步后):
    - ε = 0.001 (99.9%使用学习策略)
    - 主要利用已学策略，少量探索
-   - 性能稳定提升阶段
+   - **智能目标网络**: 确保最优策略持续利用
 
 #### ε值与行为的关系
 ```python
@@ -197,8 +198,8 @@ else:
 ## 关键配置
 
 ### DQN 超参数 (deep_Q_oneStep.py 全面优化配置)
-- `OBSERVE = 1000`: 训练前的观察步数 (约25局游戏) - **已优化缩短**
-- `EXPLORE = 20000`: ε衰减的探索步数 (约500局游戏)  
+- `OBSERVE = 10000`: 训练前的观察步数 (约250局游戏) - **扩展观察期提升基础经验**
+- `EXPLORE = 30000`: ε衰减的探索步数 (约750局游戏)  
 - `REPLAY_MEMORY = 20000`: 经验回放缓冲区大小
 - `BATCH = 512`: 训练批次大小 - **大幅优化提升8倍 (64→512)**
 - `GAMMA = 0.99`: 折扣因子
@@ -426,14 +427,22 @@ ls -la saved_networks/bird-dqn-oneStep-*.pth
 
 #### 机制原理
 ```python
-# 保守智能选择逻辑
-has_recent_best = (best_reward_step > last_target_update_step and 
-                  step - best_reward_step < 1000)  # 1000步内有效
-if has_recent_best:
-    target_network = best_reward_network  # 使用最佳奖励网络
+# 阶段性智能选择逻辑
+if step < OBSERVE:
+    # 观察阶段：专注积累经验，仅使用最佳网络
+    target_network = best_reward_network if exists else q_network
+elif step < OBSERVE + 500:
+    # 探索早期：前500步强制使用最佳网络稳定学习
+    target_network = best_reward_network if exists else q_network
 else:
-    target_network = q_network           # 使用定时网络（默认策略）
-    last_target_update_step = step       # 重置定时基准
+    # 探索后期+利用期：智能选择机制
+    has_recent_best = (best_reward_step > last_target_update_step and 
+                      step - best_reward_step < 1000)
+    if has_recent_best:
+        target_network = best_reward_network
+    else:
+        target_network = q_network
+        last_target_update_step = step
 ```
 
 #### 三网络架构
@@ -457,19 +466,32 @@ class DQNAgent:
 #### 更新策略
 ```python
 def update_target_network(self):
-    """保守智能目标网络更新"""
+    """阶段性智能目标网络更新"""
     if self.step % 350 == 0:
-        # 检查最佳网络是否仍然有效（1000步内）
-        has_recent_best = (self.best_reward_step > self.last_target_update_step and 
-                          self.step - self.best_reward_step < 1000)
-        
-        if has_recent_best:
-            # 使用最佳奖励网络
-            self.target_network.load_state_dict(self.best_reward_network.state_dict())
+        # 训练阶段判断
+        if self.step < OBSERVE:
+            # 观察阶段：仅使用最佳网络
+            if self.best_reward_step > 0:
+                self.target_network.load_state_dict(self.best_reward_network.state_dict())
+            else:
+                self.target_network.load_state_dict(self.q_network.state_dict())
+                
+        elif self.step < OBSERVE + 500:
+            # 探索早期：强制使用最佳网络
+            if self.best_reward_step > 0:
+                self.target_network.load_state_dict(self.best_reward_network.state_dict())
+            else:
+                self.target_network.load_state_dict(self.q_network.state_dict())
+                
         else:
-            # 使用定时网络（默认策略）+ 重置定时基准
-            self.target_network.load_state_dict(self.q_network.state_dict())
-            self.last_target_update_step = self.step
+            # 探索后期+利用期：智能选择机制
+            has_recent_best = (self.best_reward_step > self.last_target_update_step and 
+                              self.step - self.best_reward_step < 1000)
+            if has_recent_best:
+                self.target_network.load_state_dict(self.best_reward_network.state_dict())
+            else:
+                self.target_network.load_state_dict(self.q_network.state_dict())
+                self.last_target_update_step = self.step
 
 def update_best_reward_network(self, episode_reward):
     """更新最佳奖励网络"""
@@ -491,21 +513,44 @@ def update_best_reward_network(self, episode_reward):
 - **动态调整**: 根据学习进度智能切换策略
 - **鲁棒性增强**: 在训练不稳定期保持参考标准
 
+#### 阶段性策略设计
+- **观察阶段** (0-10000步): 专注积累经验，仅使用最佳网络保持稳定参考
+- **探索早期** (10000-10500步): 强制使用最佳网络，为学习提供稳定基础
+- **探索后期** (10500-40000步): 智能选择机制，平衡探索与稳定
+- **利用阶段** (40000步+): 智能选择机制，确保最优策略利用
+
 #### 收敛稳定性保障
 - **保守设计**: 最佳网络1000步后自动过期，回归传统定时更新
-- **默认策略**: 以定时网络为主，最佳网络为辅，确保长期收敛
+- **阶段适应**: 不同训练阶段采用不同策略，优化各阶段学习效果
 - **平滑过渡**: 避免目标网络频繁切换导致的训练震荡
 - **兜底机制**: 始终保持标准DQN的定时更新作为基础
 
 #### 监控与日志
 ```bash
-# 实时监控信息
-🎯 目标网络更新：使用最佳奖励网络 (奖励:15.2, 步数:8500)
-🏆 最佳奖励网络已更新：18.7 (步数:9200)
-🔄 目标网络更新：使用定时网络 (步数:9600)
+# 观察阶段日志
+🔬📚 OBSERVE PHASE -> BEST NETWORK ONLY 📚🔬
+   ├─ 最佳奖励: 15.230
+   ├─ 阶段策略: 观察期专注积累经验，仅使用最佳网络
+   └─ 训练步数: 7000/10000
 
-# 训练统计
-智能目标网络 - 最佳奖励: 18.7 | 年龄: 400步
+# 探索早期日志  
+🚀💎 EXPLORE EARLY -> FORCE BEST NETWORK 💎🚀
+   ├─ 最佳奖励: 18.750
+   ├─ 阶段策略: 探索前500步强制使用最佳网络稳定学习
+   └─ 剩余强制步数: 150步
+
+# 探索后期/利用期日志
+🎯🔥 探索后期 -> INTELLIGENT BEST NETWORK 🔥🎯
+   ├─ 最佳奖励: 25.460
+   ├─ 网络年龄: 680步 (< 1000步有效期)
+   └─ 切换原因: 智能选择最佳历史表现网络
+
+# 最佳网络更新日志
+🏆⭐ NEW BEST REWARD NETWORK SAVED! ⭐🏆
+   ├─ 新纪录: 32.180
+   ├─ 提升幅度: +6.720 (从 25.460)
+   ├─ 训练步数: 12800
+   └─ 此网络将用于未来1000步的目标网络更新
 ```
 
 ### 应用场景

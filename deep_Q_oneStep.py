@@ -27,7 +27,7 @@ if torch.cuda.is_available():
 GAME = 'bird'
 ACTIONS = 2
 GAMMA = 0.99
-OBSERVE = 5000
+OBSERVE = 10000
 EXPLORE = 30000
 FINAL_EPSILON = 0.001
 REPLAY_MEMORY = 20000
@@ -203,53 +203,123 @@ class DQNAgent:
         return train_stats
     
     def update_target_network(self):
-        """智能目标网络更新：优先使用最佳网络，但保证定时网络定期更新"""
+        """阶段性智能目标网络更新策略"""
         if self.step % 350 == 0:  # 350步更新周期：平衡稳定性和响应性
-            # 检查是否有新的最佳网络可用
-            has_recent_best = (self.best_reward_step > self.last_target_update_step and 
-                             self.step - self.best_reward_step < 1000)  # 1000步内的最佳网络
             
-            if has_recent_best:
-                # 使用最佳奖励网络
-                self.target_network.load_state_dict(self.best_reward_network.state_dict())
-                network_age = self.step - self.best_reward_step
-                logging.info(f"")
-                logging.info(f"🎯🔥 TARGET NETWORK SWITCH -> BEST REWARD NETWORK 🔥🎯")
-                logging.info(f"   ├─ 最佳奖励: {self.best_reward:.3f}")
-                logging.info(f"   ├─ 网络年龄: {network_age}步 (< 1000步有效期)")
-                logging.info(f"   └─ 切换原因: 使用历史最佳表现网络提升训练质量")
-                logging.info(f"")
+            # 阶段判断
+            if self.step < OBSERVE:
+                # 观察阶段：只使用最佳网络
+                strategy = "observe_best_only"
+            elif self.step < OBSERVE + 500:
+                # 探索早期：强制使用最佳网络
+                strategy = "explore_early_best_only"
             else:
-                # 使用定时网络（默认策略）
-                self.target_network.load_state_dict(self.q_network.state_dict())
-                self.last_target_update_step = self.step
-                logging.info(f"")
-                logging.info(f"🔄⏰ TARGET NETWORK SWITCH -> REGULAR UPDATE ⏰🔄")
-                logging.info(f"   ├─ 当前步数: {self.step}")
+                # 探索后期+利用期：智能选择
+                strategy = "intelligent_selection"
+            
+            # 执行对应策略
+            if strategy == "observe_best_only":
                 if self.best_reward_step > 0:
-                    network_age = self.step - self.best_reward_step
-                    logging.info(f"   ├─ 最佳网络年龄: {network_age}步 (> 1000步过期)")
-                    logging.info(f"   └─ 切换原因: 最佳网络过期，回归标准定时更新保证收敛")
+                    # 有最佳网络，使用最佳网络
+                    self.target_network.load_state_dict(self.best_reward_network.state_dict())
+                    logging.info(f"")
+                    logging.info(f"🔬📚 OBSERVE PHASE -> BEST NETWORK ONLY 📚🔬")
+                    logging.info(f"   ├─ 最佳奖励: {self.best_reward:.3f}")
+                    logging.info(f"   ├─ 阶段策略: 观察期专注积累经验，仅使用最佳网络")
+                    logging.info(f"   └─ 训练步数: {self.step}/{OBSERVE}")
+                    logging.info(f"")
                 else:
-                    logging.info(f"   └─ 切换原因: 标准定时更新 (尚无最佳网络)")
-                logging.info(f"")
+                    # 观察期无最佳网络，先使用当前网络并提示
+                    self.target_network.load_state_dict(self.q_network.state_dict())
+                    logging.info(f"")
+                    logging.info(f"🔬⚡ OBSERVE PHASE -> WAITING FOR BEST NETWORK ⚡🔬")
+                    logging.info(f"   ├─ 阶段策略: 观察期暂用当前网络，等待首个最佳网络出现")
+                    logging.info(f"   ├─ 当前表现: 随机策略，寻找突破性表现")
+                    logging.info(f"   └─ 训练步数: {self.step}/{OBSERVE}")
+                    logging.info(f"")
+                    
+            elif strategy == "explore_early_best_only":
+                if self.best_reward_step > 0:
+                    # 探索早期：强制使用最佳网络
+                    self.target_network.load_state_dict(self.best_reward_network.state_dict())
+                    remaining_steps = OBSERVE + 500 - self.step
+                    logging.info(f"")
+                    logging.info(f"🚀💎 EXPLORE EARLY -> FORCE BEST NETWORK 💎🚀")
+                    logging.info(f"   ├─ 最佳奖励: {self.best_reward:.3f}")
+                    logging.info(f"   ├─ 阶段策略: 探索前500步强制使用最佳网络稳定学习")
+                    logging.info(f"   └─ 剩余强制步数: {remaining_steps}步")
+                    logging.info(f"")
+                else:
+                    # 无最佳网络，使用当前网络
+                    self.target_network.load_state_dict(self.q_network.state_dict())
+                    remaining_steps = OBSERVE + 500 - self.step
+                    logging.info(f"")
+                    logging.info(f"🚀⚡ EXPLORE EARLY -> REGULAR UPDATE ⚡🚀")
+                    logging.info(f"   ├─ 阶段策略: 探索早期，尚无最佳网络可用")
+                    logging.info(f"   └─ 剩余早期步数: {remaining_steps}步")
+                    logging.info(f"")
+                    
+            else:  # intelligent_selection
+                # 探索后期+利用期：智能选择机制
+                has_recent_best = (self.best_reward_step > self.last_target_update_step and 
+                                 self.step - self.best_reward_step < 1000)  # 1000步内的最佳网络
+                
+                if has_recent_best:
+                    # 使用最佳奖励网络
+                    self.target_network.load_state_dict(self.best_reward_network.state_dict())
+                    network_age = self.step - self.best_reward_step
+                    phase = "探索后期" if self.step < OBSERVE + EXPLORE else "利用期"
+                    logging.info(f"")
+                    logging.info(f"🎯🔥 {phase.upper()} -> INTELLIGENT BEST NETWORK 🔥🎯")
+                    logging.info(f"   ├─ 最佳奖励: {self.best_reward:.3f}")
+                    logging.info(f"   ├─ 网络年龄: {network_age}步 (< 1000步有效期)")
+                    logging.info(f"   └─ 切换原因: 智能选择最佳历史表现网络")
+                    logging.info(f"")
+                else:
+                    # 使用定时网络（默认策略）
+                    self.target_network.load_state_dict(self.q_network.state_dict())
+                    self.last_target_update_step = self.step
+                    phase = "探索后期" if self.step < OBSERVE + EXPLORE else "利用期"
+                    logging.info(f"")
+                    logging.info(f"🔄⏰ {phase.upper()} -> INTELLIGENT REGULAR UPDATE ⏰🔄")
+                    logging.info(f"   ├─ 当前步数: {self.step}")
+                    if self.best_reward_step > 0:
+                        network_age = self.step - self.best_reward_step
+                        logging.info(f"   ├─ 最佳网络年龄: {network_age}步 (> 1000步过期)")
+                        logging.info(f"   └─ 切换原因: 最佳网络过期，智能选择定时更新")
+                    else:
+                        logging.info(f"   └─ 切换原因: 智能选择定时更新 (尚无最佳网络)")
+                    logging.info(f"")
     
     def update_best_reward_network(self, episode_reward):
         """更新最佳奖励网络"""
-        if episode_reward > self.best_reward:
+        # 观察期降低门槛，任何正奖励都保存
+        should_update = False
+        if self.step < OBSERVE:
+            # 观察期：任何正向改善都保存
+            should_update = (episode_reward > self.best_reward and episode_reward > 0)
+        else:
+            # 训练期：严格按最佳奖励更新
+            should_update = (episode_reward > self.best_reward)
+            
+        if should_update:
             old_best = self.best_reward
             improvement = episode_reward - old_best if old_best > -float('inf') else episode_reward
             self.best_reward = episode_reward
             self.best_reward_step = self.step
             self.best_reward_network.load_state_dict(self.q_network.state_dict())
             
+            phase = "观察期" if self.step < OBSERVE else "训练期"
             logging.info(f"")
-            logging.info(f"🏆⭐ NEW BEST REWARD NETWORK SAVED! ⭐🏆")
+            logging.info(f"🏆⭐ NEW BEST REWARD NETWORK SAVED! ({phase}) ⭐🏆")
             logging.info(f"   ├─ 新纪录: {episode_reward:.3f}")
             if old_best > -float('inf'):
                 logging.info(f"   ├─ 提升幅度: +{improvement:.3f} (从 {old_best:.3f})")
             logging.info(f"   ├─ 训练步数: {self.step}")
-            logging.info(f"   └─ 此网络将用于未来1000步的目标网络更新")
+            if self.step < OBSERVE:
+                logging.info(f"   └─ 观察期发现正向表现，保存为参考网络")
+            else:
+                logging.info(f"   └─ 此网络将用于未来1000步的目标网络更新")
             logging.info(f"")
     
     def update_epsilon(self):
@@ -364,12 +434,24 @@ def main():
                         logging.info(f"  优化效果 - 决策效率提升: {decision_efficiency:.0f}% | 批次规模: {BATCH} (vs原64)")
                         logging.info(f"  信息效率 - 状态重叠度: 0% (vs原75%) | 每步信息增益: 4x")
                         
-                        # 智能目标网络状态
+                        # 智能目标网络状态（与实际更新逻辑保持一致）
                         if agent.best_reward_step > 0:
                             target_network_age = agent.step - agent.best_reward_step
-                            is_using_best = (agent.best_reward_step > agent.last_target_update_step and target_network_age < 1000)
-                            network_type = "🎯最佳网络" if is_using_best else "🔄定时网络"
-                            status_icon = "✅有效" if target_network_age < 1000 else "⏰过期"
+                            
+                            if agent.step < OBSERVE:
+                                # 观察期：有最佳网络就使用
+                                network_type = "🎯最佳网络"
+                                status_icon = "📚观察期"
+                            elif agent.step < OBSERVE + 500:
+                                # 探索早期：有最佳网络就使用
+                                network_type = "🎯最佳网络"
+                                status_icon = "🚀早期强制"
+                            else:
+                                # 探索后期+利用期：智能选择逻辑
+                                is_using_best = (agent.best_reward_step > agent.last_target_update_step and target_network_age < 1000)
+                                network_type = "🎯最佳网络" if is_using_best else "🔄定时网络"
+                                status_icon = "✅有效" if target_network_age < 1000 else "⏰过期"
+                                
                             logging.info(f"  智能目标网络 - 当前使用: {network_type} | 最佳奖励: {agent.best_reward:.3f} | 年龄: {target_network_age}步 ({status_icon})")
                         else:
                             logging.info(f"  智能目标网络 - 当前使用: 🔄定时网络 | 状态: 尚未发现最佳网络")
@@ -406,11 +488,19 @@ def main():
             else:
                 status = "利用期"
             
-            # 当前目标网络状态
+            # 当前目标网络状态（与实际更新逻辑保持一致）
             if agent.best_reward_step > 0:
-                target_network_age = agent.step - agent.best_reward_step
-                is_using_best = (agent.best_reward_step > agent.last_target_update_step and target_network_age < 1000)
-                network_type = "🎯最佳" if is_using_best else "🔄定时"
+                if agent.step < OBSERVE:
+                    # 观察期：有最佳网络就使用
+                    network_type = "🎯最佳"
+                elif agent.step < OBSERVE + 500:
+                    # 探索早期：有最佳网络就使用
+                    network_type = "🎯最佳"
+                else:
+                    # 探索后期+利用期：智能选择逻辑
+                    target_network_age = agent.step - agent.best_reward_step
+                    is_using_best = (agent.best_reward_step > agent.last_target_update_step and target_network_age < 1000)
+                    network_type = "🎯最佳" if is_using_best else "🔄定时"
             else:
                 network_type = "🔄定时"
             
