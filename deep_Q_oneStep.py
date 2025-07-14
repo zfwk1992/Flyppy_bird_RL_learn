@@ -27,8 +27,8 @@ if torch.cuda.is_available():
 GAME = 'bird'
 ACTIONS = 2
 GAMMA = 0.99
-OBSERVE = 1000
-EXPLORE = 20000
+OBSERVE = 5000
+EXPLORE = 30000
 FINAL_EPSILON = 0.001
 REPLAY_MEMORY = 20000
 BATCH = 512  # 进一步增大批次：4帧决策释放GPU资源，支持更大批次训练
@@ -53,6 +53,7 @@ def setup_logging():
     return log_filename
 # 该文件使用FixedOptimizedDQN网络进行单步预测训练
 # 避免了复杂的多步预测时序问题，采用经典DQN架构
+# 🎯 智能目标网络选择：如果最佳奖励网络比定时网络更新，优先使用最佳奖励网络
 
 
 class FixedOptimizedDQN(nn.Module):
@@ -107,6 +108,13 @@ class DQNAgent:
         self.target_network = FixedOptimizedDQN(actions).to(device)
         self.target_network.load_state_dict(self.q_network.state_dict())
         
+        # 智能目标网络选择
+        self.best_reward_network = FixedOptimizedDQN(actions).to(device)  # 最高奖励网络
+        self.best_reward_network.load_state_dict(self.q_network.state_dict())
+        self.best_reward = -float('inf')  # 最佳奖励记录
+        self.best_reward_step = 0  # 最佳奖励对应的步数
+        self.last_target_update_step = 0  # 上次定时更新步数
+        
         # 优化器
         self.optimizer = optim.AdamW(self.q_network.parameters(), lr=1e-3, weight_decay=1e-5)
         
@@ -159,7 +167,7 @@ class DQNAgent:
         current_q_values = self.q_network(states)
         current_q = current_q_values.gather(1, actions.unsqueeze(1))
         
-        # 目标Q值 (Double DQN)
+        # 目标Q值 (Double DQN with智能目标网络)
         with torch.no_grad():
             next_q_values = self.q_network(next_states)
             next_actions = next_q_values.max(1)[1]
@@ -195,9 +203,54 @@ class DQNAgent:
         return train_stats
     
     def update_target_network(self):
-        """软更新目标网络"""
-        if self.step % 100 == 0:
-            self.target_network.load_state_dict(self.q_network.state_dict())
+        """智能目标网络更新：优先使用最佳网络，但保证定时网络定期更新"""
+        if self.step % 350 == 0:  # 350步更新周期：平衡稳定性和响应性
+            # 检查是否有新的最佳网络可用
+            has_recent_best = (self.best_reward_step > self.last_target_update_step and 
+                             self.step - self.best_reward_step < 1000)  # 1000步内的最佳网络
+            
+            if has_recent_best:
+                # 使用最佳奖励网络
+                self.target_network.load_state_dict(self.best_reward_network.state_dict())
+                network_age = self.step - self.best_reward_step
+                logging.info(f"")
+                logging.info(f"🎯🔥 TARGET NETWORK SWITCH -> BEST REWARD NETWORK 🔥🎯")
+                logging.info(f"   ├─ 最佳奖励: {self.best_reward:.3f}")
+                logging.info(f"   ├─ 网络年龄: {network_age}步 (< 1000步有效期)")
+                logging.info(f"   └─ 切换原因: 使用历史最佳表现网络提升训练质量")
+                logging.info(f"")
+            else:
+                # 使用定时网络（默认策略）
+                self.target_network.load_state_dict(self.q_network.state_dict())
+                self.last_target_update_step = self.step
+                logging.info(f"")
+                logging.info(f"🔄⏰ TARGET NETWORK SWITCH -> REGULAR UPDATE ⏰🔄")
+                logging.info(f"   ├─ 当前步数: {self.step}")
+                if self.best_reward_step > 0:
+                    network_age = self.step - self.best_reward_step
+                    logging.info(f"   ├─ 最佳网络年龄: {network_age}步 (> 1000步过期)")
+                    logging.info(f"   └─ 切换原因: 最佳网络过期，回归标准定时更新保证收敛")
+                else:
+                    logging.info(f"   └─ 切换原因: 标准定时更新 (尚无最佳网络)")
+                logging.info(f"")
+    
+    def update_best_reward_network(self, episode_reward):
+        """更新最佳奖励网络"""
+        if episode_reward > self.best_reward:
+            old_best = self.best_reward
+            improvement = episode_reward - old_best if old_best > -float('inf') else episode_reward
+            self.best_reward = episode_reward
+            self.best_reward_step = self.step
+            self.best_reward_network.load_state_dict(self.q_network.state_dict())
+            
+            logging.info(f"")
+            logging.info(f"🏆⭐ NEW BEST REWARD NETWORK SAVED! ⭐🏆")
+            logging.info(f"   ├─ 新纪录: {episode_reward:.3f}")
+            if old_best > -float('inf'):
+                logging.info(f"   ├─ 提升幅度: +{improvement:.3f} (从 {old_best:.3f})")
+            logging.info(f"   ├─ 训练步数: {self.step}")
+            logging.info(f"   └─ 此网络将用于未来1000步的目标网络更新")
+            logging.info(f"")
     
     def update_epsilon(self):
         """更新探索率"""
@@ -248,6 +301,7 @@ def main():
     logging.info(f"观察步数: {OBSERVE}, 探索步数: {EXPLORE}, 批次大小: {BATCH}")
     logging.info(f"决策间隔: {FRAME_PER_ACTION}帧/动作, 游戏速度: 500FPS")
     logging.info(f"优化配置: 4帧状态匹配4帧决策间隔, 大批次训练({BATCH})")
+    logging.info("🎯 智能目标网络: 自动选择最佳奖励网络或定时网络，提升训练稳定性")
     
     # 估算计算负载
     decisions_per_sec = 500 // FRAME_PER_ACTION
@@ -283,7 +337,7 @@ def main():
                 train_stats = agent.train()
                 agent.update_target_network()
                 
-                # 记录训练信息
+                # 记录训练信息 (降低频率以便看清目标网络切换信息)
                 if agent.step % 1000 == 0 and train_stats is not None:
                     avg_reward = np.mean(agent.reward_history[-100:]) if agent.reward_history else 0
                     if agent.step < OBSERVE:
@@ -309,6 +363,16 @@ def main():
                         
                         logging.info(f"  优化效果 - 决策效率提升: {decision_efficiency:.0f}% | 批次规模: {BATCH} (vs原64)")
                         logging.info(f"  信息效率 - 状态重叠度: 0% (vs原75%) | 每步信息增益: 4x")
+                        
+                        # 智能目标网络状态
+                        if agent.best_reward_step > 0:
+                            target_network_age = agent.step - agent.best_reward_step
+                            is_using_best = (agent.best_reward_step > agent.last_target_update_step and target_network_age < 1000)
+                            network_type = "🎯最佳网络" if is_using_best else "🔄定时网络"
+                            status_icon = "✅有效" if target_network_age < 1000 else "⏰过期"
+                            logging.info(f"  智能目标网络 - 当前使用: {network_type} | 最佳奖励: {agent.best_reward:.3f} | 年龄: {target_network_age}步 ({status_icon})")
+                        else:
+                            logging.info(f"  智能目标网络 - 当前使用: 🔄定时网络 | 状态: 尚未发现最佳网络")
             
             # 更新探索率
             agent.update_epsilon()
@@ -321,8 +385,18 @@ def main():
             episode_count += 1
             agent.reward_history.append(episode_reward)
             
+            # 更新最佳奖励网络
+            agent.update_best_reward_network(episode_reward)
+            
             if episode_reward > max_score:
                 max_score = episode_reward
+                
+            # 保存最佳模型
+            if episode_reward > agent.best_reward:
+                os.makedirs("saved_networks", exist_ok=True)
+                torch.save(agent.q_network.state_dict(), 
+                          f"saved_networks/bird-dqn-oneStep-best-{episode_reward:.3f}.pth")
+                logging.info(f"🏆 新的最佳模型已保存: bird-dqn-oneStep-best-{episode_reward:.3f}.pth (得分: {episode_reward:.3f})")
                 
             # 计算训练状态
             if agent.step < OBSERVE:
@@ -332,17 +406,25 @@ def main():
             else:
                 status = "利用期"
             
+            # 当前目标网络状态
+            if agent.best_reward_step > 0:
+                target_network_age = agent.step - agent.best_reward_step
+                is_using_best = (agent.best_reward_step > agent.last_target_update_step and target_network_age < 1000)
+                network_type = "🎯最佳" if is_using_best else "🔄定时"
+            else:
+                network_type = "🔄定时"
+            
             logging.info(f"游戏 {episode_count} 结束 | 步数: {agent.step} | {status} | "
-                        f"得分: {episode_reward:.3f} | 最高分: {max_score:.3f} | ε: {agent.epsilon:.4f}")
+                        f"得分: {episode_reward:.3f} | 最高分: {max_score:.3f} | ε: {agent.epsilon:.4f} | 目标网络: {network_type}")
             
             episode_reward = 0
             
-            # 保存模型
+            # 定期保存模型
             if episode_count % 100 == 0:
                 os.makedirs("saved_networks", exist_ok=True)
                 torch.save(agent.q_network.state_dict(), 
                           f"saved_networks/bird-dqn-oneStep-{episode_count}.pth")
-                logging.info(f"模型已保存: bird-dqn-oneStep-{episode_count}.pth")
+                logging.info(f"定期模型已保存: bird-dqn-oneStep-{episode_count}.pth")
         
         # 阶段提示
         if agent.step == OBSERVE:
