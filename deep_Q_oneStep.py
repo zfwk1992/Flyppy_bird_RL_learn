@@ -123,7 +123,8 @@ class DQNAgent:
         
         # 训练参数
         self.epsilon = 1.0
-        self.step = 0
+        self.step = 0  # 总帧数计数器
+        self.decision_step = 0  # 决策步数计数器
         self.reward_history = []
         
     def preprocess_state(self, state):
@@ -203,14 +204,14 @@ class DQNAgent:
         return train_stats
     
     def update_target_network(self):
-        """阶段性智能目标网络更新策略"""
-        if self.step % 350 == 0:  # 350步更新周期：平衡稳定性和响应性
+        """阶段性智能目标网络更新策略（使用决策步数）"""
+        if self.decision_step % 350 == 0:  # 350个决策更新周期：平衡稳定性和响应性
             
-            # 阶段判断
-            if self.step < OBSERVE:
+            # 阶段判断（使用决策步数）
+            if self.decision_step < OBSERVE:
                 # 观察阶段：只使用最佳网络
                 strategy = "observe_best_only"
-            elif self.step < OBSERVE + 500:
+            elif self.decision_step < OBSERVE + 500:
                 # 探索早期：强制使用最佳网络
                 strategy = "explore_early_best_only"
             else:
@@ -226,7 +227,7 @@ class DQNAgent:
                     logging.info(f"🔬📚 OBSERVE PHASE -> BEST NETWORK ONLY 📚🔬")
                     logging.info(f"   ├─ 最佳奖励: {self.best_reward:.3f}")
                     logging.info(f"   ├─ 阶段策略: 观察期专注积累经验，仅使用最佳网络")
-                    logging.info(f"   └─ 训练步数: {self.step}/{OBSERVE}")
+                    logging.info(f"   └─ 决策步数: {self.decision_step}/{OBSERVE}")
                     logging.info(f"")
                 else:
                     # 观察期无最佳网络，先使用当前网络并提示
@@ -235,14 +236,14 @@ class DQNAgent:
                     logging.info(f"🔬⚡ OBSERVE PHASE -> WAITING FOR BEST NETWORK ⚡🔬")
                     logging.info(f"   ├─ 阶段策略: 观察期暂用当前网络，等待首个最佳网络出现")
                     logging.info(f"   ├─ 当前表现: 随机策略，寻找突破性表现")
-                    logging.info(f"   └─ 训练步数: {self.step}/{OBSERVE}")
+                    logging.info(f"   └─ 决策步数: {self.decision_step}/{OBSERVE}")
                     logging.info(f"")
                     
             elif strategy == "explore_early_best_only":
                 if self.best_reward_step > 0:
                     # 探索早期：强制使用最佳网络
                     self.target_network.load_state_dict(self.best_reward_network.state_dict())
-                    remaining_steps = OBSERVE + 500 - self.step
+                    remaining_steps = OBSERVE + 500 - self.decision_step
                     logging.info(f"")
                     logging.info(f"🚀💎 EXPLORE EARLY -> FORCE BEST NETWORK 💎🚀")
                     logging.info(f"   ├─ 最佳奖励: {self.best_reward:.3f}")
@@ -252,7 +253,7 @@ class DQNAgent:
                 else:
                     # 无最佳网络，使用当前网络
                     self.target_network.load_state_dict(self.q_network.state_dict())
-                    remaining_steps = OBSERVE + 500 - self.step
+                    remaining_steps = OBSERVE + 500 - self.decision_step
                     logging.info(f"")
                     logging.info(f"🚀⚡ EXPLORE EARLY -> REGULAR UPDATE ⚡🚀")
                     logging.info(f"   ├─ 阶段策略: 探索早期，尚无最佳网络可用")
@@ -267,8 +268,8 @@ class DQNAgent:
                 if has_recent_best:
                     # 使用最佳奖励网络
                     self.target_network.load_state_dict(self.best_reward_network.state_dict())
-                    network_age = self.step - self.best_reward_step
-                    phase = "探索后期" if self.step < OBSERVE + EXPLORE else "利用期"
+                    network_age = self.decision_step - self.best_reward_step
+                    phase = "探索后期" if self.decision_step < OBSERVE + EXPLORE else "利用期"
                     logging.info(f"")
                     logging.info(f"🎯🔥 {phase.upper()} -> INTELLIGENT BEST NETWORK 🔥🎯")
                     logging.info(f"   ├─ 最佳奖励: {self.best_reward:.3f}")
@@ -278,13 +279,13 @@ class DQNAgent:
                 else:
                     # 使用定时网络（默认策略）
                     self.target_network.load_state_dict(self.q_network.state_dict())
-                    self.last_target_update_step = self.step
-                    phase = "探索后期" if self.step < OBSERVE + EXPLORE else "利用期"
+                    self.last_target_update_step = self.decision_step
+                    phase = "探索后期" if self.decision_step < OBSERVE + EXPLORE else "利用期"
                     logging.info(f"")
                     logging.info(f"🔄⏰ {phase.upper()} -> INTELLIGENT REGULAR UPDATE ⏰🔄")
-                    logging.info(f"   ├─ 当前步数: {self.step}")
+                    logging.info(f"   ├─ 当前决策步数: {self.decision_step}")
                     if self.best_reward_step > 0:
-                        network_age = self.step - self.best_reward_step
+                        network_age = self.decision_step - self.best_reward_step
                         logging.info(f"   ├─ 最佳网络年龄: {network_age}步 (> 1000步过期)")
                         logging.info(f"   └─ 切换原因: 最佳网络过期，智能选择定时更新")
                     else:
@@ -295,7 +296,7 @@ class DQNAgent:
         """更新最佳奖励网络"""
         # 观察期降低门槛，任何正奖励都保存
         should_update = False
-        if self.step < OBSERVE:
+        if self.decision_step < OBSERVE:
             # 观察期：任何正向改善都保存
             should_update = (episode_reward > self.best_reward and episode_reward > 0)
         else:
@@ -306,16 +307,16 @@ class DQNAgent:
             old_best = self.best_reward
             improvement = episode_reward - old_best if old_best > -float('inf') else episode_reward
             self.best_reward = episode_reward
-            self.best_reward_step = self.step
+            self.best_reward_step = self.decision_step
             self.best_reward_network.load_state_dict(self.q_network.state_dict())
             
-            phase = "观察期" if self.step < OBSERVE else "训练期"
+            phase = "观察期" if self.decision_step < OBSERVE else "训练期"
             logging.info(f"")
             logging.info(f"🏆⭐ NEW BEST REWARD NETWORK SAVED! ({phase}) ⭐🏆")
             logging.info(f"   ├─ 新纪录: {episode_reward:.3f}")
             if old_best > -float('inf'):
                 logging.info(f"   ├─ 提升幅度: +{improvement:.3f} (从 {old_best:.3f})")
-            logging.info(f"   ├─ 训练步数: {self.step}")
+            logging.info(f"   ├─ 决策步数: {self.decision_step}")
             if self.step < OBSERVE:
                 logging.info(f"   └─ 观察期发现正向表现，保存为参考网络")
             else:
@@ -323,11 +324,11 @@ class DQNAgent:
             logging.info(f"")
     
     def update_epsilon(self):
-        """更新探索率"""
-        if self.step < OBSERVE:
+        """更新探索率（使用决策步数）"""
+        if self.decision_step < OBSERVE:
             self.epsilon = 1.0
-        elif self.step < OBSERVE + EXPLORE:
-            self.epsilon = 1.0 - (self.step - OBSERVE) / EXPLORE * (1.0 - FINAL_EPSILON)
+        elif self.decision_step < OBSERVE + EXPLORE:
+            self.epsilon = 1.0 - (self.decision_step - OBSERVE) / EXPLORE * (1.0 - FINAL_EPSILON)
         else:
             self.epsilon = FINAL_EPSILON
 
@@ -354,6 +355,31 @@ def main():
     # 初始化智能体
     agent = DQNAgent(ACTIONS)
     
+    # 加载预训练模型作为初始智能体
+    pretrained_model = "saved_networks/bird-dqn-oneStep-1300.pth"
+    if os.path.exists(pretrained_model):
+        logging.info(f"🔄 加载预训练模型作为初始智能体: {pretrained_model}")
+        agent.q_network.load_state_dict(torch.load(pretrained_model, map_location=device))
+        agent.target_network.load_state_dict(agent.q_network.state_dict())
+        agent.best_reward_network.load_state_dict(agent.q_network.state_dict())
+        
+        # 保持正常训练流程：观察期->探索期->利用期
+        agent.step = 0  # 从观察期开始（帧数）
+        agent.decision_step = 0  # 从观察期开始（决策步数）
+        agent.epsilon = 1.0  # 从观察期的ε值开始
+        
+        # 设置预训练模型的基础表现作为最佳奖励参考
+        agent.best_reward = 30.0  # 假设1300轮模型有较好表现
+        agent.best_reward_step = 0
+        
+        logging.info(f"✅ 预训练模型加载成功！")
+        logging.info(f"📊 训练状态: 从观察期开始，使用成熟智能体玩游戏")
+        logging.info(f"🎯 探索率: {agent.epsilon} (观察期开始)")
+        logging.info(f"🚀 预训练智能体将在观察期展示技能，探索期作为目标网络基础")
+        logging.info(f"🎮 预期观察期表现: 高分游戏，快速积累高质量经验")
+    else:
+        logging.info(f"⚠️ 预训练模型不存在，从头开始训练")
+    
     # 获取初始状态
     do_nothing = np.zeros(ACTIONS)
     do_nothing[0] = 1
@@ -362,7 +388,7 @@ def main():
     s_t = np.stack((x_t, x_t, x_t, x_t), axis=2)
     
     # 训练统计
-    episode_count = 0
+    episode_count = 0  # 重新开始计数，但使用预训练智能体
     episode_reward = 0
     max_score = 0
     action_index = 0
@@ -395,30 +421,31 @@ def main():
         
         episode_reward += r_t
         
-        # 每帧都增加步数
+        # 每帧都增加帧数
         agent.step += 1
         
-        # 只在决策帧存储经验
+        # 只在决策帧存储经验和训练
         if agent.step % FRAME_PER_ACTION == 0:
+            agent.decision_step += 1  # 增加决策步数
             agent.store_transition(s_t, action_index, r_t, s_t1, terminal)
             
             # 训练网络（仅训练期）
-            if agent.step > OBSERVE:
+            if agent.decision_step > OBSERVE:
                 train_stats = agent.train()
             
-            # 更新目标网络（所有阶段都需要，按350步周期）
+            # 更新目标网络（所有阶段都需要，按350个决策周期）
             agent.update_target_network()
             
             # 记录训练信息 (降低频率以便看清目标网络切换信息)
-            if agent.step > OBSERVE and agent.step % 1000 == 0 and train_stats is not None:
+            if agent.decision_step > OBSERVE and agent.decision_step % 1000 == 0 and train_stats is not None:
                 avg_reward = np.mean(agent.reward_history[-100:]) if agent.reward_history else 0
-                if agent.step < OBSERVE:
-                    status = f"观察期 {agent.step}/{OBSERVE}"
-                elif agent.step < OBSERVE + EXPLORE:
-                    status = f"探索期 {agent.step}/{OBSERVE + EXPLORE}"
+                if agent.decision_step < OBSERVE:
+                    status = f"观察期 {agent.decision_step}/{OBSERVE}"
+                elif agent.decision_step < OBSERVE + EXPLORE:
+                    status = f"探索期 {agent.decision_step}/{OBSERVE + EXPLORE}"
                 else:
                     status = "利用期"
-                logging.info(f"[{status}] 步数: {agent.step} | ε: {agent.epsilon:.4f}")
+                logging.info(f"[{status}] 决策步数: {agent.decision_step} | ε: {agent.epsilon:.4f}")
                 logging.info(f"  损失: {train_stats['loss']:.4f} | 平均奖励: {avg_reward:.3f} | 最高分: {max_score:.3f}")
                 logging.info(f"  Q值 - 平均: {train_stats['current_q_mean']:.3f} | 最大: {train_stats['current_q_max']:.3f} | 最小: {train_stats['current_q_min']:.3f}")
                 logging.info(f"  动作Q值 - 不跳: {train_stats['q_values_action0']:.3f} | 跳跃: {train_stats['q_values_action1']:.3f}")
@@ -438,13 +465,13 @@ def main():
                     
                     # 智能目标网络状态（与实际更新逻辑保持一致）
                     if agent.best_reward_step > 0:
-                        target_network_age = agent.step - agent.best_reward_step
+                        target_network_age = agent.decision_step - agent.best_reward_step
                         
-                        if agent.step < OBSERVE:
+                        if agent.decision_step < OBSERVE:
                             # 观察期：有最佳网络就使用
                             network_type = "🎯最佳网络"
                             status_icon = "📚观察期"
-                        elif agent.step < OBSERVE + 500:
+                        elif agent.decision_step < OBSERVE + 500:
                             # 探索早期：有最佳网络就使用
                             network_type = "🎯最佳网络"
                             status_icon = "🚀早期强制"
@@ -469,44 +496,42 @@ def main():
             episode_count += 1
             agent.reward_history.append(episode_reward)
             
-            # 更新最佳奖励网络
-            agent.update_best_reward_network(episode_reward)
-            
+            # 保存最佳模型（先保存文件，再更新内存网络）
             if episode_reward > max_score:
                 max_score = episode_reward
-                
-            # 保存最佳模型
-            if episode_reward > agent.best_reward:
                 os.makedirs("saved_networks", exist_ok=True)
                 torch.save(agent.q_network.state_dict(), 
                           f"saved_networks/bird-dqn-oneStep-best-{episode_reward:.3f}.pth")
                 logging.info(f"🏆 新的最佳模型已保存: bird-dqn-oneStep-best-{episode_reward:.3f}.pth (得分: {episode_reward:.3f})")
+            
+            # 更新最佳奖励网络（在内存中）
+            agent.update_best_reward_network(episode_reward)
                 
             # 计算训练状态
-            if agent.step < OBSERVE:
-                status = f"观察期 ({agent.step}/{OBSERVE})"
-            elif agent.step < OBSERVE + EXPLORE:
-                status = f"探索期 ({agent.step}/{OBSERVE + EXPLORE})"
+            if agent.decision_step < OBSERVE:
+                status = f"观察期 ({agent.decision_step}/{OBSERVE})"
+            elif agent.decision_step < OBSERVE + EXPLORE:
+                status = f"探索期 ({agent.decision_step}/{OBSERVE + EXPLORE})"
             else:
                 status = "利用期"
             
             # 当前目标网络状态（与实际更新逻辑保持一致）
             if agent.best_reward_step > 0:
-                if agent.step < OBSERVE:
+                if agent.decision_step < OBSERVE:
                     # 观察期：有最佳网络就使用
                     network_type = "🎯最佳"
-                elif agent.step < OBSERVE + 500:
+                elif agent.decision_step < OBSERVE + 500:
                     # 探索早期：有最佳网络就使用
                     network_type = "🎯最佳"
                 else:
                     # 探索后期+利用期：智能选择逻辑
-                    target_network_age = agent.step - agent.best_reward_step
+                    target_network_age = agent.decision_step - agent.best_reward_step
                     is_using_best = (agent.best_reward_step > agent.last_target_update_step and target_network_age < 1000)
                     network_type = "🎯最佳" if is_using_best else "🔄定时"
             else:
                 network_type = "🔄定时"
             
-            logging.info(f"游戏 {episode_count} 结束 | 步数: {agent.step} | {status} | "
+            logging.info(f"游戏 {episode_count} 结束 | 决策步数: {agent.decision_step} | {status} | "
                         f"得分: {episode_reward:.3f} | 最高分: {max_score:.3f} | ε: {agent.epsilon:.4f} | 目标网络: {network_type}")
             
             episode_reward = 0
@@ -519,18 +544,18 @@ def main():
                 logging.info(f"定期模型已保存: bird-dqn-oneStep-{episode_count}.pth")
         
         # 阶段提示
-        if agent.step == OBSERVE:
+        if agent.decision_step == OBSERVE:
             logging.info("🎯 重要节点：观察期结束，开始DQN训练！预期得分开始提升...")
-        elif agent.step == OBSERVE + EXPLORE:
+        elif agent.decision_step == OBSERVE + EXPLORE:
             logging.info("🎯 重要节点：探索期结束，进入利用期！网络已充分学习...")
         
         # 定期提示进度
-        if agent.step % 5000 == 0 and agent.step > 0:
-            if agent.step < OBSERVE:
-                remaining = OBSERVE - agent.step
+        if agent.decision_step % 5000 == 0 and agent.decision_step > 0:
+            if agent.decision_step < OBSERVE:
+                remaining = OBSERVE - agent.decision_step
                 logging.info(f"📊 观察期进度：还需 {remaining} 步开始训练")
-            elif agent.step < OBSERVE + EXPLORE:
-                remaining = OBSERVE + EXPLORE - agent.step
+            elif agent.decision_step < OBSERVE + EXPLORE:
+                remaining = OBSERVE + EXPLORE - agent.decision_step
                 logging.info(f"📊 探索期进度：还需 {remaining} 步进入利用期")
 
 
