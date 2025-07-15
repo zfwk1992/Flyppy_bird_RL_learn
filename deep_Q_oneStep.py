@@ -139,13 +139,23 @@ class DQNAgent:
         return state_tensor.permute(0, 3, 1, 2)  # [B,H,W,C] -> [B,C,H,W]
     
     def select_action(self, state_tensor):
-        """选择动作"""
-        if random.random() < self.epsilon:
-            return random.randrange(self.actions)
+        """选择动作（专门的观察期预训练模型策略）"""
+        if self.decision_step < OBSERVE:
+            # 观察期专用策略：50%随机探索 + 50%预训练模型
+            if random.random() < 0.5:
+                return random.randrange(self.actions)  # 50%随机探索
+            else:
+                with torch.no_grad():
+                    q_values = self.q_network(state_tensor)
+                    return q_values.max(1)[1].item()  # 50%预训练模型
         else:
-            with torch.no_grad():
-                q_values = self.q_network(state_tensor)
-                return q_values.max(1)[1].item()
+            # 探索期+利用期：正常ε-贪婪策略
+            if random.random() < self.epsilon:
+                return random.randrange(self.actions)
+            else:
+                with torch.no_grad():
+                    q_values = self.q_network(state_tensor)
+                    return q_values.max(1)[1].item()
     
     def store_transition(self, state, action, reward, next_state, done):
         """存储经验"""
@@ -326,10 +336,13 @@ class DQNAgent:
     def update_epsilon(self):
         """更新探索率（使用决策步数）"""
         if self.decision_step < OBSERVE:
-            self.epsilon = 1.0
+            # 观察期：使用专门的混合策略，不依赖epsilon
+            self.epsilon = 0.5  # 仅作为显示用，实际不使用
         elif self.decision_step < OBSERVE + EXPLORE:
+            # 探索期：从1.0线性衰减到0.001
             self.epsilon = 1.0 - (self.decision_step - OBSERVE) / EXPLORE * (1.0 - FINAL_EPSILON)
         else:
+            # 利用期：固定为0.001
             self.epsilon = FINAL_EPSILON
 
 
@@ -374,11 +387,13 @@ def main():
         
         logging.info(f"✅ 预训练模型加载成功！")
         logging.info(f"📊 训练状态: 从观察期开始，使用成熟智能体玩游戏")
-        logging.info(f"🎯 探索率: {agent.epsilon} (观察期开始)")
+        logging.info(f"🎯 观察期专用策略: 50%随机探索 + 50%预训练模型")
         logging.info(f"🚀 预训练智能体将在观察期展示技能，探索期作为目标网络基础")
         logging.info(f"🎮 预期观察期表现: 高分游戏，快速积累高质量经验")
+        logging.info(f"📈 优势: 预训练模型即使在观察期也能提供高质量决策")
     else:
         logging.info(f"⚠️ 预训练模型不存在，从头开始训练")
+        logging.info(f"📉 观察期使用标准策略: 100%随机探索")
     
     # 获取初始状态
     do_nothing = np.zeros(ACTIONS)
@@ -441,11 +456,14 @@ def main():
                 avg_reward = np.mean(agent.reward_history[-100:]) if agent.reward_history else 0
                 if agent.decision_step < OBSERVE:
                     status = f"观察期 {agent.decision_step}/{OBSERVE}"
+                    strategy_info = "50%随机+50%预训练"
                 elif agent.decision_step < OBSERVE + EXPLORE:
                     status = f"探索期 {agent.decision_step}/{OBSERVE + EXPLORE}"
+                    strategy_info = f"ε={agent.epsilon:.4f}"
                 else:
                     status = "利用期"
-                logging.info(f"[{status}] 决策步数: {agent.decision_step} | ε: {agent.epsilon:.4f}")
+                    strategy_info = f"ε={agent.epsilon:.4f}"
+                logging.info(f"[{status}] 决策步数: {agent.decision_step} | 策略: {strategy_info}")
                 logging.info(f"  损失: {train_stats['loss']:.4f} | 平均奖励: {avg_reward:.3f} | 最高分: {max_score:.3f}")
                 logging.info(f"  Q值 - 平均: {train_stats['current_q_mean']:.3f} | 最大: {train_stats['current_q_max']:.3f} | 最小: {train_stats['current_q_min']:.3f}")
                 logging.info(f"  动作Q值 - 不跳: {train_stats['q_values_action0']:.3f} | 跳跃: {train_stats['q_values_action1']:.3f}")
@@ -510,10 +528,13 @@ def main():
             # 计算训练状态
             if agent.decision_step < OBSERVE:
                 status = f"观察期 ({agent.decision_step}/{OBSERVE})"
+                strategy_display = "50%随机+50%预训练"
             elif agent.decision_step < OBSERVE + EXPLORE:
                 status = f"探索期 ({agent.decision_step}/{OBSERVE + EXPLORE})"
+                strategy_display = f"ε: {agent.epsilon:.4f}"
             else:
                 status = "利用期"
+                strategy_display = f"ε: {agent.epsilon:.4f}"
             
             # 当前目标网络状态（与实际更新逻辑保持一致）
             if agent.best_reward_step > 0:
@@ -532,7 +553,7 @@ def main():
                 network_type = "🔄定时"
             
             logging.info(f"游戏 {episode_count} 结束 | 决策步数: {agent.decision_step} | {status} | "
-                        f"得分: {episode_reward:.3f} | 最高分: {max_score:.3f} | ε: {agent.epsilon:.4f} | 目标网络: {network_type}")
+                        f"得分: {episode_reward:.3f} | 最高分: {max_score:.3f} | 策略: {strategy_display} | 目标网络: {network_type}")
             
             episode_reward = 0
             
