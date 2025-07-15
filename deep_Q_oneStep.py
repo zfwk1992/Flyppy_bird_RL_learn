@@ -402,59 +402,61 @@ def main():
         if agent.step % FRAME_PER_ACTION == 0:
             agent.store_transition(s_t, action_index, r_t, s_t1, terminal)
             
-            # 训练网络
+            # 训练网络（仅训练期）
             if agent.step > OBSERVE:
                 train_stats = agent.train()
-                agent.update_target_network()
+            
+            # 更新目标网络（所有阶段都需要，按350步周期）
+            agent.update_target_network()
+            
+            # 记录训练信息 (降低频率以便看清目标网络切换信息)
+            if agent.step > OBSERVE and agent.step % 1000 == 0 and train_stats is not None:
+                avg_reward = np.mean(agent.reward_history[-100:]) if agent.reward_history else 0
+                if agent.step < OBSERVE:
+                    status = f"观察期 {agent.step}/{OBSERVE}"
+                elif agent.step < OBSERVE + EXPLORE:
+                    status = f"探索期 {agent.step}/{OBSERVE + EXPLORE}"
+                else:
+                    status = "利用期"
+                logging.info(f"[{status}] 步数: {agent.step} | ε: {agent.epsilon:.4f}")
+                logging.info(f"  损失: {train_stats['loss']:.4f} | 平均奖励: {avg_reward:.3f} | 最高分: {max_score:.3f}")
+                logging.info(f"  Q值 - 平均: {train_stats['current_q_mean']:.3f} | 最大: {train_stats['current_q_max']:.3f} | 最小: {train_stats['current_q_min']:.3f}")
+                logging.info(f"  动作Q值 - 不跳: {train_stats['q_values_action0']:.3f} | 跳跃: {train_stats['q_values_action1']:.3f}")
+                logging.info(f"  目标Q值: {train_stats['target_q_mean']:.3f} | 批次奖励: {train_stats['reward_mean']:.3f}")
                 
-                # 记录训练信息 (降低频率以便看清目标网络切换信息)
-                if agent.step % 1000 == 0 and train_stats is not None:
-                    avg_reward = np.mean(agent.reward_history[-100:]) if agent.reward_history else 0
-                    if agent.step < OBSERVE:
-                        status = f"观察期 {agent.step}/{OBSERVE}"
-                    elif agent.step < OBSERVE + EXPLORE:
-                        status = f"探索期 {agent.step}/{OBSERVE + EXPLORE}"
-                    else:
-                        status = "利用期"
-                    logging.info(f"[{status}] 步数: {agent.step} | ε: {agent.epsilon:.4f}")
-                    logging.info(f"  损失: {train_stats['loss']:.4f} | 平均奖励: {avg_reward:.3f} | 最高分: {max_score:.3f}")
-                    logging.info(f"  Q值 - 平均: {train_stats['current_q_mean']:.3f} | 最大: {train_stats['current_q_max']:.3f} | 最小: {train_stats['current_q_min']:.3f}")
-                    logging.info(f"  动作Q值 - 不跳: {train_stats['q_values_action0']:.3f} | 跳跃: {train_stats['q_values_action1']:.3f}")
-                    logging.info(f"  目标Q值: {train_stats['target_q_mean']:.3f} | 批次奖励: {train_stats['reward_mean']:.3f}")
+                # 添加GPU使用情况和优化效果日志
+                if torch.cuda.is_available() and 'gpu_memory_used' in train_stats:
+                    logging.info(f"  GPU内存 - 已用: {train_stats['gpu_memory_used']:.1f}MB | 缓存: {train_stats['gpu_memory_cached']:.1f}MB")
                     
-                    # 添加GPU使用情况和优化效果日志
-                    if torch.cuda.is_available() and 'gpu_memory_used' in train_stats:
-                        logging.info(f"  GPU内存 - 已用: {train_stats['gpu_memory_used']:.1f}MB | 缓存: {train_stats['gpu_memory_cached']:.1f}MB")
+                    # 计算当前配置的理论改善
+                    original_decisions_per_sec = 250  # 原2帧决策
+                    current_decisions_per_sec = 500 // FRAME_PER_ACTION
+                    decision_efficiency = (original_decisions_per_sec - current_decisions_per_sec) / original_decisions_per_sec * 100
+                    
+                    logging.info(f"  优化效果 - 决策效率提升: {decision_efficiency:.0f}% | 批次规模: {BATCH} (vs原64)")
+                    logging.info(f"  信息效率 - 状态重叠度: 0% (vs原75%) | 每步信息增益: 4x")
+                    
+                    # 智能目标网络状态（与实际更新逻辑保持一致）
+                    if agent.best_reward_step > 0:
+                        target_network_age = agent.step - agent.best_reward_step
                         
-                        # 计算当前配置的理论改善
-                        original_decisions_per_sec = 250  # 原2帧决策
-                        current_decisions_per_sec = 500 // FRAME_PER_ACTION
-                        decision_efficiency = (original_decisions_per_sec - current_decisions_per_sec) / original_decisions_per_sec * 100
-                        
-                        logging.info(f"  优化效果 - 决策效率提升: {decision_efficiency:.0f}% | 批次规模: {BATCH} (vs原64)")
-                        logging.info(f"  信息效率 - 状态重叠度: 0% (vs原75%) | 每步信息增益: 4x")
-                        
-                        # 智能目标网络状态（与实际更新逻辑保持一致）
-                        if agent.best_reward_step > 0:
-                            target_network_age = agent.step - agent.best_reward_step
-                            
-                            if agent.step < OBSERVE:
-                                # 观察期：有最佳网络就使用
-                                network_type = "🎯最佳网络"
-                                status_icon = "📚观察期"
-                            elif agent.step < OBSERVE + 500:
-                                # 探索早期：有最佳网络就使用
-                                network_type = "🎯最佳网络"
-                                status_icon = "🚀早期强制"
-                            else:
-                                # 探索后期+利用期：智能选择逻辑
-                                is_using_best = (agent.best_reward_step > agent.last_target_update_step and target_network_age < 1000)
-                                network_type = "🎯最佳网络" if is_using_best else "🔄定时网络"
-                                status_icon = "✅有效" if target_network_age < 1000 else "⏰过期"
-                                
-                            logging.info(f"  智能目标网络 - 当前使用: {network_type} | 最佳奖励: {agent.best_reward:.3f} | 年龄: {target_network_age}步 ({status_icon})")
+                        if agent.step < OBSERVE:
+                            # 观察期：有最佳网络就使用
+                            network_type = "🎯最佳网络"
+                            status_icon = "📚观察期"
+                        elif agent.step < OBSERVE + 500:
+                            # 探索早期：有最佳网络就使用
+                            network_type = "🎯最佳网络"
+                            status_icon = "🚀早期强制"
                         else:
-                            logging.info(f"  智能目标网络 - 当前使用: 🔄定时网络 | 状态: 尚未发现最佳网络")
+                            # 探索后期+利用期：智能选择逻辑
+                            is_using_best = (agent.best_reward_step > agent.last_target_update_step and target_network_age < 1000)
+                            network_type = "🎯最佳网络" if is_using_best else "🔄定时网络"
+                            status_icon = "✅有效" if target_network_age < 1000 else "⏰过期"
+                            
+                        logging.info(f"  智能目标网络 - 当前使用: {network_type} | 最佳奖励: {agent.best_reward:.3f} | 年龄: {target_network_age}步 ({status_icon})")
+                    else:
+                        logging.info(f"  智能目标网络 - 当前使用: 🔄定时网络 | 状态: 尚未发现最佳网络")
             
             # 更新探索率
             agent.update_epsilon()
