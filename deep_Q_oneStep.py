@@ -143,19 +143,31 @@ class DQNAgent:
         if self.decision_step < OBSERVE:
             # 观察期专用策略：50%随机探索 + 50%预训练模型
             if random.random() < 0.5:
-                return random.randrange(self.actions)  # 50%随机探索
+                action = random.randrange(self.actions)  # 50%随机探索
+                return action
             else:
                 with torch.no_grad():
                     q_values = self.q_network(state_tensor)
-                    return q_values.max(1)[1].item()  # 50%预训练模型
+                    action = q_values.max(1)[1].item()  # 50%预训练模型
+                    # 添加Q值监控（每100步记录一次）
+                    if self.decision_step % 100 == 0:
+                        q_vals = q_values[0].cpu().numpy()
+                        logging.info(f"🔍 Q值监控 | 步数: {self.decision_step} | Q值: [不跳: {q_vals[0]:.3f}, 跳跃: {q_vals[1]:.3f}] | 选择: {action} | 差值: {abs(q_vals[1]-q_vals[0]):.3f}")
+                    return action
         else:
             # 探索期+利用期：正常ε-贪婪策略
             if random.random() < self.epsilon:
-                return random.randrange(self.actions)
+                action = random.randrange(self.actions)
+                return action
             else:
                 with torch.no_grad():
                     q_values = self.q_network(state_tensor)
-                    return q_values.max(1)[1].item()
+                    action = q_values.max(1)[1].item()
+                    # 添加Q值监控（每500步记录一次）
+                    if self.decision_step % 500 == 0:
+                        q_vals = q_values[0].cpu().numpy()
+                        logging.info(f"🔍 Q值监控 | 步数: {self.decision_step} | Q值: [不跳: {q_vals[0]:.3f}, 跳跃: {q_vals[1]:.3f}] | 选择: {action} | 差值: {abs(q_vals[1]-q_vals[0]):.3f} | ε: {self.epsilon:.3f}")
+                    return action
     
     def store_transition(self, state, action, reward, next_state, done):
         """存储经验"""
@@ -221,8 +233,8 @@ class DQNAgent:
             if self.decision_step < OBSERVE:
                 # 观察阶段：只使用最佳网络
                 strategy = "observe_best_only"
-            elif self.decision_step < OBSERVE + 500:
-                # 探索早期：强制使用最佳网络
+            elif self.decision_step < OBSERVE + 5000:
+                # 探索早期：强制使用最佳网络 (扩展到5000步)
                 strategy = "explore_early_best_only"
             else:
                 # 探索后期+利用期：智能选择
@@ -253,7 +265,7 @@ class DQNAgent:
                 if self.best_reward_step > 0:
                     # 探索早期：强制使用最佳网络
                     self.target_network.load_state_dict(self.best_reward_network.state_dict())
-                    remaining_steps = OBSERVE + 500 - self.decision_step
+                    remaining_steps = OBSERVE + 5000 - self.decision_step
                     logging.info(f"")
                     logging.info(f"🚀💎 EXPLORE EARLY -> FORCE BEST NETWORK 💎🚀")
                     logging.info(f"   ├─ 最佳奖励: {self.best_reward:.3f}")
@@ -263,7 +275,7 @@ class DQNAgent:
                 else:
                     # 无最佳网络，使用当前网络
                     self.target_network.load_state_dict(self.q_network.state_dict())
-                    remaining_steps = OBSERVE + 500 - self.decision_step
+                    remaining_steps = OBSERVE + 5000 - self.decision_step
                     logging.info(f"")
                     logging.info(f"🚀⚡ EXPLORE EARLY -> REGULAR UPDATE ⚡🚀")
                     logging.info(f"   ├─ 阶段策略: 探索早期，尚无最佳网络可用")
@@ -339,11 +351,12 @@ class DQNAgent:
             # 观察期：使用专门的混合策略，不依赖epsilon
             self.epsilon = 0.5  # 仅作为显示用，实际不使用
         elif self.decision_step < OBSERVE + EXPLORE:
-            # 探索期：从1.0线性衰减到0.001
-            self.epsilon = 1.0 - (self.decision_step - OBSERVE) / EXPLORE * (1.0 - FINAL_EPSILON)
+            # 探索期：从1.0线性衰减到0.2（更温和的衰减）
+            progress = (self.decision_step - OBSERVE) / EXPLORE
+            self.epsilon = 1.0 - progress * 0.8  # 从1.0衰减到0.2，而不是0.001
         else:
-            # 利用期：固定为0.001
-            self.epsilon = FINAL_EPSILON
+            # 利用期：固定为0.2（保持适度探索）
+            self.epsilon = 0.2
 
 
 def main():
@@ -489,7 +502,7 @@ def main():
                             # 观察期：有最佳网络就使用
                             network_type = "🎯最佳网络"
                             status_icon = "📚观察期"
-                        elif agent.decision_step < OBSERVE + 500:
+                        elif agent.decision_step < OBSERVE + 5000:
                             # 探索早期：有最佳网络就使用
                             network_type = "🎯最佳网络"
                             status_icon = "🚀早期强制"
@@ -541,7 +554,7 @@ def main():
                 if agent.decision_step < OBSERVE:
                     # 观察期：有最佳网络就使用
                     network_type = "🎯最佳"
-                elif agent.decision_step < OBSERVE + 500:
+                elif agent.decision_step < OBSERVE + 5000:
                     # 探索早期：有最佳网络就使用
                     network_type = "🎯最佳"
                 else:
