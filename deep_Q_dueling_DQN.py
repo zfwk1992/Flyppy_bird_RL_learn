@@ -474,33 +474,26 @@ class EnhancedDuelingDQNAgent:
             
             # 阶段判断（使用决策步数）
             if self.decision_step < OBSERVE:
-                strategy = "observe_best_only"
+                strategy = "observe_no_best"  # 观察期不使用最佳网络
             elif self.decision_step < OBSERVE + 500:
-                strategy = "explore_early_best_only"
+                strategy = "explore_early_force_best"  # 探索期初期强制使用最佳
             else:
-                strategy = "intelligent_selection"
+                strategy = "intelligent_selection"  # 智能选择模式
             
             # 执行对应策略
-            if strategy == "observe_best_only":
-                if self.best_reward_step > 0:
-                    self.target_network.load_state_dict(self.best_reward_network.state_dict())
-                    logging.info(f"")
-                    logging.info(f"🔬📚 DUELING DQN OBSERVE PHASE -> BEST NETWORK ONLY 📚🔬")
-                    logging.info(f"   ├─ 最佳奖励: {self.best_reward:.3f}")
-                    logging.info(f"   ├─ 网络架构: Value + Advantage 分支")
-                    logging.info(f"   ├─ 阶段策略: 观察期专注积累经验，仅使用最佳网络")
-                    logging.info(f"   └─ 决策步数: {self.decision_step}/{OBSERVE}")
-                    logging.info(f"")
-                else:
-                    self.target_network.load_state_dict(self.q_network.state_dict())
-                    logging.info(f"")
-                    logging.info(f"🔬⚡ DUELING DQN OBSERVE PHASE -> WAITING FOR BEST NETWORK ⚡🔬")
-                    logging.info(f"   ├─ 网络架构: Value + Advantage 分支")
-                    logging.info(f"   ├─ 阶段策略: 观察期暂用当前网络，等待首个最佳网络出现")
-                    logging.info(f"   └─ 决策步数: {self.decision_step}/{OBSERVE}")
-                    logging.info(f"")
+            if strategy == "observe_no_best":
+                # 观察期：始终使用当前网络，不使用"最佳"网络
+                self.target_network.load_state_dict(self.q_network.state_dict())
+                logging.info(f"")
+                logging.info(f"🔬🔄 DUELING DQN OBSERVE PHASE -> CURRENT NETWORK ONLY 🔄🔬")
+                logging.info(f"   ├─ 网络架构: Value + Advantage 分支")
+                logging.info(f"   ├─ 阶段策略: 观察期只使用当前网络，不保存最佳网络")
+                logging.info(f"   ├─ 当前最高奖励: {self.best_reward:.3f} (仅记录)")
+                logging.info(f"   └─ 决策步数: {self.decision_step}/{OBSERVE}")
+                logging.info(f"")
                     
-            elif strategy == "explore_early_best_only":
+            elif strategy == "explore_early_force_best":
+                # 探索期初期：强制使用最佳网络
                 if self.best_reward_step > 0:
                     self.target_network.load_state_dict(self.best_reward_network.state_dict())
                     remaining_steps = OBSERVE + 500 - self.decision_step
@@ -512,18 +505,19 @@ class EnhancedDuelingDQNAgent:
                     logging.info(f"   └─ 剩余强制步数: {remaining_steps}步")
                     logging.info(f"")
                 else:
+                    # 理论上不应该进入这里，因为探索期开始时已初始化了最佳网络
                     self.target_network.load_state_dict(self.q_network.state_dict())
                     remaining_steps = OBSERVE + 500 - self.decision_step
                     logging.info(f"")
-                    logging.info(f"🚀⚡ DUELING DQN EXPLORE EARLY -> REGULAR UPDATE ⚡🚀")
+                    logging.info(f"🚀⚠️ DUELING DQN EXPLORE EARLY -> FALLBACK TO CURRENT ⚠️🚀")
                     logging.info(f"   ├─ 网络架构: Value + Advantage 分支")
-                    logging.info(f"   ├─ 阶段策略: 探索早期，尚无最佳网络可用")
+                    logging.info(f"   ├─ 异常情况: 探索期无最佳网络，回退到当前网络")
                     logging.info(f"   └─ 剩余早期步数: {remaining_steps}步")
                     logging.info(f"")
                     
             else:  # intelligent_selection
                 has_recent_best = (self.best_reward_step > self.last_target_update_step and 
-                                 self.step - self.best_reward_step < 1000)
+                                 self.decision_step - self.best_reward_step < 1000)
                 
                 if has_recent_best:
                     self.target_network.load_state_dict(self.best_reward_network.state_dict())
@@ -553,11 +547,18 @@ class EnhancedDuelingDQNAgent:
                     logging.info(f"")
     
     def update_best_reward_network(self, episode_reward):
-        """更新最佳奖励网络"""
+        """更新最佳奖励网络 - 优化版本"""
         should_update = False
+        
         if self.decision_step < OBSERVE:
-            should_update = (episode_reward > self.best_reward and episode_reward > 0)
+            # 观察期：不更新最佳网络，只记录最佳奖励用于参考
+            if episode_reward > self.best_reward:
+                self.best_reward = episode_reward
+                # 注意：不更新 best_reward_step 和 best_reward_network
+                logging.info(f"📈 观察期最佳奖励更新: {episode_reward:.3f} (仅记录，不保存网络)")
+            return  # 观察期直接返回，不保存网络
         else:
+            # 训练期：正常更新最佳网络
             should_update = (episode_reward > self.best_reward)
             
         if should_update:
@@ -781,11 +782,31 @@ def main():
                           f"saved_networks/bird-dueling-dqn-{episode_count}.pth")
                 logging.info(f"定期增强版 Dueling DQN 模型已保存: bird-dueling-dqn-{episode_count}.pth")
         
-        # 阶段提示
+        # 阶段提示和特殊处理
         if agent.decision_step == OBSERVE:
-            logging.info("🎯 重要节点：观察期结束，开始增强版 Dueling DQN 训练！预期Value和Advantage分支开始分化...")
+            # 观察期结束，进入探索期，重置最佳奖励并初始化最佳网络
+            observe_best_reward = agent.best_reward  # 保存观察期最高奖励用于日志
+            
+            # 重置最佳奖励为较低基准，鼓励探索期快速突破
+            agent.best_reward = 0.14  
+            agent.best_reward_network.load_state_dict(agent.q_network.state_dict())
+            agent.best_reward_step = agent.decision_step
+            
+            logging.info(f"")
+            logging.info(f"🎯🌟 重要节点：观察期结束，进入探索期！ 🌟🎯")
+            logging.info(f"   ├─ 观察期最高奖励: {observe_best_reward:.3f}")
+            logging.info(f"   ├─ 重置最佳基准: {agent.best_reward:.3f} (鼓励探索期快速突破)")
+            logging.info(f"   ├─ 立即初始化: 使用当前网络作为首个最佳网络")
+            logging.info(f"   ├─ 开始训练: Value和Advantage分支开始分化学习")
+            logging.info(f"   └─ 目标网络: 将立即使用该最佳网络作为稳定参考")
+            logging.info(f"")
         elif agent.decision_step == OBSERVE + EXPLORE:
-            logging.info("🎯 重要节点：探索期结束，进入利用期！增强版 Dueling DQN 已充分学习状态价值和动作优势...")
+            logging.info(f"")
+            logging.info(f"🎯💪 重要节点：探索期结束，进入利用期！ 💪🎯")
+            logging.info(f"   ├─ 最终最佳奖励: {agent.best_reward:.3f}")
+            logging.info(f"   ├─ 学习成果: Value和Advantage分支已充分分化")
+            logging.info(f"   └─ 接下来: 主要利用已学习的策略优化表现")
+            logging.info(f"")
         
         # 定期提示进度
         if agent.decision_step % 5000 == 0 and agent.decision_step > 0:
