@@ -786,19 +786,25 @@ def main():
         if agent.decision_step == OBSERVE:
             # 观察期结束，进入探索期，重置最佳奖励并初始化最佳网络
             observe_best_reward = agent.best_reward  # 保存观察期最高奖励用于日志
+            observe_max_score = max_score  # 保存观察期最高分用于日志
             
-            # 重置最佳奖励为较低基准，鼓励探索期快速突破
+            # 重置最佳奖励和最高分为较低基准，鼓励探索期快速突破
             agent.best_reward = 0.14  
+            max_score = 0.14  # 同时重置最高分显示
             agent.best_reward_network.load_state_dict(agent.q_network.state_dict())
             agent.best_reward_step = agent.decision_step
             
+            # 立即更换目标网络为最佳网络，不等待350步周期
+            agent.target_network.load_state_dict(agent.best_reward_network.state_dict())
+            
             logging.info(f"")
             logging.info(f"🎯🌟 重要节点：观察期结束，进入探索期！ 🌟🎯")
-            logging.info(f"   ├─ 观察期最高奖励: {observe_best_reward:.3f}")
-            logging.info(f"   ├─ 重置最佳基准: {agent.best_reward:.3f} (鼓励探索期快速突破)")
+            logging.info(f"   ├─ 观察期最高奖励: {observe_best_reward:.3f} (最高分: {observe_max_score:.3f})")
+            logging.info(f"   ├─ 重置最佳基准: {agent.best_reward:.3f} (最高分也重置为: {max_score:.3f})")
             logging.info(f"   ├─ 立即初始化: 使用当前网络作为首个最佳网络")
+            logging.info(f"   ├─ 立即更换目标网络: 目标网络已切换为最佳网络 ⚡")
             logging.info(f"   ├─ 开始训练: Value和Advantage分支开始分化学习")
-            logging.info(f"   └─ 目标网络: 将立即使用该最佳网络作为稳定参考")
+            logging.info(f"   └─ 智能机制: 后续将每350步检查是否需要更换")
             logging.info(f"")
         elif agent.decision_step == OBSERVE + EXPLORE:
             logging.info(f"")
