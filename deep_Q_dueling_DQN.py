@@ -13,10 +13,131 @@ import numpy as np
 from collections import deque
 import os
 import logging
+import warnings
 from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')  # 使用非交互式后端
+
+# 抑制PNG sRGB警告
+warnings.filterwarnings("ignore", message=".*iCCP.*")
+os.environ['PYTHONWARNINGS'] = 'ignore'
+
+
+class SumTree:
+    """
+    SumTree数据结构用于优先经验回放
+    支持O(log n)时间复杂度的采样和更新操作
+    """
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.tree = np.zeros(2 * capacity - 1)
+        self.data = np.zeros(capacity, dtype=object)
+        self.write = 0
+        self.n_entries = 0
+    
+    def _propagate(self, idx, change):
+        """向上传播优先级变化"""
+        parent = (idx - 1) // 2
+        self.tree[parent] += change
+        if parent != 0:
+            self._propagate(parent, change)
+    
+    def _retrieve(self, idx, s):
+        """根据累积和检索叶子节点"""
+        left = 2 * idx + 1
+        right = left + 1
+        
+        if left >= len(self.tree):
+            return idx
+        
+        if s <= self.tree[left]:
+            return self._retrieve(left, s)
+        else:
+            return self._retrieve(right, s - self.tree[left])
+    
+    def total(self):
+        """返回所有优先级的总和"""
+        return self.tree[0]
+    
+    def add(self, priority, data):
+        """添加新的经验和优先级"""
+        idx = self.write + self.capacity - 1
+        self.data[self.write] = data
+        self.update(idx, priority)
+        
+        self.write += 1
+        if self.write >= self.capacity:
+            self.write = 0
+        
+        if self.n_entries < self.capacity:
+            self.n_entries += 1
+    
+    def update(self, idx, priority):
+        """更新指定索引的优先级"""
+        change = priority - self.tree[idx]
+        self.tree[idx] = priority
+        self._propagate(idx, change)
+    
+    def get(self, s):
+        """根据累积值获取数据"""
+        idx = self._retrieve(0, s)
+        data_idx = idx - self.capacity + 1
+        return (idx, self.tree[idx], self.data[data_idx])
+
+
+class PrioritizedReplayBuffer:
+    """
+    优先经验回放缓冲区
+    基于TD-error的优先级采样
+    """
+    def __init__(self, capacity, alpha=0.6, beta=0.4, beta_increment=0.01):
+        self.tree = SumTree(capacity)
+        self.capacity = capacity
+        self.alpha = alpha  # 优先级指数
+        self.beta = beta  # 重要性采样参数
+        self.beta_increment = beta_increment
+        self.max_priority = 1.0
+        
+    def add(self, experience):
+        """添加经验,使用最大优先级"""
+        priority = self.max_priority ** self.alpha
+        self.tree.add(priority, experience)
+    
+    def sample(self, batch_size):
+        """优先级采样"""
+        batch = []
+        idxs = []
+        segment = self.tree.total() / batch_size
+        priorities = []
+        
+        self.beta = min(1.0, self.beta + self.beta_increment)
+        
+        for i in range(batch_size):
+            a = segment * i
+            b = segment * (i + 1)
+            s = random.uniform(a, b)
+            (idx, p, data) = self.tree.get(s)
+            priorities.append(p)
+            batch.append(data)
+            idxs.append(idx)
+        
+        # 计算重要性采样权重
+        sampling_probabilities = priorities / self.tree.total()
+        is_weight = np.power(self.tree.n_entries * sampling_probabilities, -self.beta)
+        is_weight /= is_weight.max()
+        
+        return batch, idxs, is_weight
+    
+    def update_priorities(self, idxs, errors):
+        """根据TD-error更新优先级"""
+        for idx, error in zip(idxs, errors):
+            priority = (np.abs(error) + 1e-6) ** self.alpha
+            self.max_priority = max(self.max_priority, priority)
+            self.tree.update(idx, priority)
+    
+    def __len__(self):
+        return self.tree.n_entries
 
 # 添加游戏路径
 sys.path.append("game/")
@@ -190,7 +311,7 @@ def plot_training_progress(agent, episode_count, timestamp):
 
 网络架构:
 - 卷积层: 2层 + BatchNorm
-- 共享层: 2层 (1024→ 1024)
+- 共享层: 2层 (1024->1024)
 - Value 分支: 3层
 - Advantage 分支: 3层
 - Dropout: 0.3
@@ -211,7 +332,7 @@ def plot_training_progress(agent, episode_count, timestamp):
         plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
         plt.close()
         
-        logging.info(f"📈 训练进度图已保存: {plot_filename}")
+        # logging.info(f"📈 训练进度图已保存: {plot_filename}")  # 减少冗余日志
         
     except Exception as e:
         logging.warning(f"⚠️ 绘图失败: {e}")
@@ -234,8 +355,8 @@ class EnhancedDuelingDQN(nn.Module):
         # 共享卷积层（特征提取）
         self.conv1 = nn.Conv2d(4, 32, kernel_size=8, stride=4, padding=2)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1)
-        self.bn1 = nn.BatchNorm2d(32)
-        self.bn2 = nn.BatchNorm2d(64)
+        self.ln1 = nn.LayerNorm([32, 20, 20])  # LayerNorm替代BatchNorm
+        self.ln2 = nn.LayerNorm([64, 10, 10])  # LayerNorm替代BatchNorm
         self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
         
         # 增强的共享全连接层
@@ -276,7 +397,7 @@ class EnhancedDuelingDQN(nn.Module):
                 nn.init.kaiming_normal_(module.weight, mode='fan_in', nonlinearity='relu')
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0.1)
-            elif isinstance(module, nn.BatchNorm2d):
+            elif isinstance(module, nn.LayerNorm):
                 nn.init.constant_(module.weight, 1)
                 nn.init.constant_(module.bias, 0)
     
@@ -291,8 +412,8 @@ class EnhancedDuelingDQN(nn.Module):
             Q值 [batch_size, actions]
         """
         # 共享特征提取
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = F.relu(self.bn2(self.conv2(x)))
+        x = F.relu(self.ln1(self.conv1(x)))
+        x = F.relu(self.ln2(self.conv2(x)))
         x = self.adaptive_pool(x)
         x = x.reshape(x.size(0), -1)
         
@@ -322,8 +443,8 @@ class EnhancedDuelingDQN(nn.Module):
             tuple: (value, advantage)
         """
         # 共享特征提取
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = F.relu(self.bn2(self.conv2(x)))
+        x = F.relu(self.ln1(self.conv1(x)))
+        x = F.relu(self.ln2(self.conv2(x)))
         x = self.adaptive_pool(x)
         x = x.reshape(x.size(0), -1)
         
@@ -350,18 +471,15 @@ class EnhancedDuelingDQNAgent:
         self.target_network = EnhancedDuelingDQN(actions).to(device)
         self.target_network.load_state_dict(self.q_network.state_dict())
         
-        # 智能目标网络选择
-        self.best_reward_network = EnhancedDuelingDQN(actions).to(device)
-        self.best_reward_network.load_state_dict(self.q_network.state_dict())
-        self.best_reward = -float('inf')
-        self.best_reward_step = 0
-        self.last_target_update_step = 0
+        # 软更新参数
+        self.tau = 5e-3  # 软更新系数 (从1e-3优化为5e-3，提升目标网络响应性)
         
-        # 优化器 - 降低学习率
+        # 优化器和学习率调度器
         self.optimizer = optim.AdamW(self.q_network.parameters(), lr=5e-4, weight_decay=1e-5)
+        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10000, gamma=0.5)
         
-        # 经验回放缓冲区
-        self.memory = deque(maxlen=REPLAY_MEMORY)
+        # 优先经验回放缓冲区
+        self.memory = PrioritizedReplayBuffer(REPLAY_MEMORY, alpha=0.6, beta=0.4, beta_increment=0.01)
         
         # 训练参数
         self.epsilon = 1.0
@@ -371,6 +489,36 @@ class EnhancedDuelingDQNAgent:
         self.loss_history = []  # 记录损失历史
         self.episode_rewards = []  # 记录每局奖励
         self.training_steps = []  # 记录训练步数
+        
+    def load_checkpoint(self, checkpoint_path):
+        """加载完整的训练检查点"""
+        if os.path.exists(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            
+            # 加载网络状态
+            self.q_network.load_state_dict(checkpoint['main_network'])
+            self.target_network.load_state_dict(checkpoint['target_network'])
+            self.optimizer.load_state_dict(checkpoint['optimizer'])
+            self.scheduler.load_state_dict(checkpoint['scheduler'])
+            
+            # 加载训练状态
+            self.decision_step = checkpoint.get('decision_step', 0)
+            self.epsilon = checkpoint.get('epsilon', 1.0)
+            self.reward_history = checkpoint.get('reward_history', [])
+            self.loss_history = checkpoint.get('loss_history', [])
+            
+            # 恢复目标网络更新计数
+            if 'target_update_count' in checkpoint:
+                self.target_update_count = checkpoint['target_update_count']
+            
+            print(f"✅ 检查点加载成功: {checkpoint_path}")
+            print(f"   📊 恢复状态: 决策步{self.decision_step} | ε:{self.epsilon:.4f}")
+            print(f"   🎯 目标网络更新次数: {getattr(self, 'target_update_count', 0)}")
+            
+            return checkpoint.get('episode_count', 0), checkpoint.get('max_score', 0)
+        else:
+            print(f"❌ 检查点文件不存在: {checkpoint_path}")
+            return 0, 0
         
     def preprocess_state(self, state):
         """预处理状态"""
@@ -398,35 +546,40 @@ class EnhancedDuelingDQNAgent:
                     return q_values.max(1)[1].item()
     
     def store_transition(self, state, action, reward, next_state, done):
-        """存储经验"""
-        self.memory.append((state, action, reward, next_state, done))
+        """存储经验到优先缓冲区"""
+        experience = (state, action, reward, next_state, done)
+        self.memory.add(experience)
     
     def train(self):
-        """训练网络"""
+        """使用优先经验回放的训练网络"""
         if len(self.memory) < BATCH:
             return None
         
-        # 随机采样
-        batch = random.sample(self.memory, BATCH)
+        # 优先级采样
+        batch, idxs, is_weights = self.memory.sample(BATCH)
         states = torch.FloatTensor([e[0] for e in batch]).to(device, non_blocking=True).permute(0, 3, 1, 2)
         actions = torch.LongTensor([e[1] for e in batch]).to(device, non_blocking=True)
         rewards = torch.FloatTensor([e[2] for e in batch]).to(device, non_blocking=True)
         next_states = torch.FloatTensor([e[3] for e in batch]).to(device, non_blocking=True).permute(0, 3, 1, 2)
         dones = torch.BoolTensor([e[4] for e in batch]).to(device, non_blocking=True)
+        is_weights = torch.FloatTensor(is_weights).to(device, non_blocking=True)
         
         # 当前Q值
         current_q_values = self.q_network(states)
         current_q = current_q_values.gather(1, actions.unsqueeze(1))
         
-        # 目标Q值 (Double DQN with智能目标网络)
+        # 目标Q值 (Double DQN)
         with torch.no_grad():
             next_q_values = self.q_network(next_states)
             next_actions = next_q_values.max(1)[1]
             next_q = self.target_network(next_states).gather(1, next_actions.unsqueeze(1))
             target_q = rewards.unsqueeze(1) + (GAMMA * next_q * ~dones.unsqueeze(1))
         
-        # 计算损失
-        loss = F.smooth_l1_loss(current_q, target_q)
+        # 计算TD错误
+        td_errors = target_q - current_q
+        
+        # 使用重要性采样权重的损失
+        loss = (is_weights.unsqueeze(1) * F.smooth_l1_loss(current_q, target_q, reduction='none')).mean()
         
         # 反向传播
         self.optimizer.zero_grad()
@@ -440,6 +593,7 @@ class EnhancedDuelingDQNAgent:
             'current_q_mean': current_q.mean().item(),
             'current_q_max': current_q.max().item(),
             'current_q_min': current_q.min().item(),
+            'current_q_std': current_q.std().item(),
             'target_q_mean': target_q.mean().item(),
             'reward_mean': rewards.mean().item(),
             'q_values_action0': current_q_values[:, 0].mean().item(),
@@ -461,123 +615,90 @@ class EnhancedDuelingDQNAgent:
             train_stats['gpu_memory_used'] = torch.cuda.memory_allocated(device) / 1024**2
             train_stats['gpu_memory_cached'] = torch.cuda.memory_reserved(device) / 1024**2
         
+        # 更新优先级
+        td_errors_cpu = td_errors.detach().cpu().numpy().flatten()
+        self.memory.update_priorities(idxs, td_errors_cpu)
+        
         # 记录损失用于绘图
         if hasattr(self, 'loss_history'):
             self.loss_history.append(loss.item())
             self.training_steps.append(self.decision_step)
         
+        # 软更新目标网络
+        self.soft_update_target_network()
+        
+        # 更新学习率 (每10000个决策步调用一次，而不是每次训练都调用)
+        if self.decision_step % 10000 == 0:
+            self.scheduler.step()
+            current_lr = self.optimizer.param_groups[0]['lr']
+            print(f"🔧 学习率更新: {current_lr:.2e} (步数:{self.decision_step})")
+            if current_lr < 5e-5:
+                print(f"⚠️  学习率过低警告! 当前:{current_lr:.2e}, 可能影响学习效果")
+        
+        # 添加PER相关统计信息
+        train_stats['td_error_mean'] = np.abs(td_errors_cpu).mean()
+        train_stats['td_error_max'] = np.abs(td_errors_cpu).max()
+        train_stats['is_weight_mean'] = is_weights.mean().item()
+        train_stats['per_beta'] = self.memory.beta
+        
+        # 训练健康监控指标
+        train_stats['learning_rate'] = self.optimizer.param_groups[0]['lr']
+        train_stats['epsilon'] = self.epsilon
+        train_stats['advantage_range'] = (advantage.max() - advantage.min()).item()
+        train_stats['q_value_range'] = (current_q_values.max() - current_q_values.min()).item()
+        
+        # 目标网络与主网络差异监控
+        with torch.no_grad():
+            target_q_values = self.target_network(states)
+            target_q_selected = target_q_values.gather(1, actions.unsqueeze(1))
+            
+            # 网络差异指标
+            train_stats['target_main_q_diff'] = torch.abs(target_q_selected - current_q).mean().item()
+            train_stats['target_main_q_ratio'] = (target_q_selected.mean() / (current_q.mean() + 1e-8)).item()
+            
+            # 训练稳定性指标
+            train_stats['gradient_norm'] = sum(p.grad.norm().item() for p in self.q_network.parameters() if p.grad is not None)
+            train_stats['target_update_count'] = getattr(self, 'target_update_count', 0)
+            
+            # 网络收敛监控
+            train_stats['q_value_stability'] = current_q.std().item() / (current_q.mean().abs().item() + 1e-8)
+            train_stats['action_preference'] = torch.abs(current_q_values[:, 0].mean() - current_q_values[:, 1].mean()).item()
+        
+        # 检查训练停滞预警
+        if train_stats['learning_rate'] < 1e-6:
+            print("⚠️  警告: 学习率过低 ({:.2e})，可能导致训练停滞！".format(train_stats['learning_rate']))
+        
+        if train_stats['advantage_std'] < 0.01:
+            print("⚠️  警告: Advantage标准差过小 ({:.4f})，动作区分度不足！".format(train_stats['advantage_std']))
+        
         return train_stats
     
-    def update_target_network(self):
-        """阶段性智能目标网络更新策略（使用决策步数）"""
-        if self.decision_step % 350 == 0:  # 350个决策更新周期
-            
-            # 阶段判断（使用决策步数）
-            if self.decision_step < OBSERVE:
-                strategy = "observe_no_best"  # 观察期不使用最佳网络
-            elif self.decision_step < OBSERVE + 500:
-                strategy = "explore_early_force_best"  # 探索期初期强制使用最佳
-            else:
-                strategy = "intelligent_selection"  # 智能选择模式
-            
-            # 执行对应策略
-            if strategy == "observe_no_best":
-                # 观察期：始终使用当前网络，不使用"最佳"网络
-                self.target_network.load_state_dict(self.q_network.state_dict())
-                logging.info(f"")
-                logging.info(f"🔬🔄 DUELING DQN OBSERVE PHASE -> CURRENT NETWORK ONLY 🔄🔬")
-                logging.info(f"   ├─ 网络架构: Value + Advantage 分支")
-                logging.info(f"   ├─ 阶段策略: 观察期只使用当前网络，不保存最佳网络")
-                logging.info(f"   ├─ 当前最高奖励: {self.best_reward:.3f} (仅记录)")
-                logging.info(f"   └─ 决策步数: {self.decision_step}/{OBSERVE}")
-                logging.info(f"")
-                    
-            elif strategy == "explore_early_force_best":
-                # 探索期初期：强制使用最佳网络
-                if self.best_reward_step > 0:
-                    self.target_network.load_state_dict(self.best_reward_network.state_dict())
-                    remaining_steps = OBSERVE + 500 - self.decision_step
-                    logging.info(f"")
-                    logging.info(f"🚀💎 DUELING DQN EXPLORE EARLY -> FORCE BEST NETWORK 💎🚀")
-                    logging.info(f"   ├─ 最佳奖励: {self.best_reward:.3f}")
-                    logging.info(f"   ├─ 网络架构: Value + Advantage 分支")
-                    logging.info(f"   ├─ 阶段策略: 探索前500步强制使用最佳网络稳定学习")
-                    logging.info(f"   └─ 剩余强制步数: {remaining_steps}步")
-                    logging.info(f"")
-                else:
-                    # 理论上不应该进入这里，因为探索期开始时已初始化了最佳网络
-                    self.target_network.load_state_dict(self.q_network.state_dict())
-                    remaining_steps = OBSERVE + 500 - self.decision_step
-                    logging.info(f"")
-                    logging.info(f"🚀⚠️ DUELING DQN EXPLORE EARLY -> FALLBACK TO CURRENT ⚠️🚀")
-                    logging.info(f"   ├─ 网络架构: Value + Advantage 分支")
-                    logging.info(f"   ├─ 异常情况: 探索期无最佳网络，回退到当前网络")
-                    logging.info(f"   └─ 剩余早期步数: {remaining_steps}步")
-                    logging.info(f"")
-                    
-            else:  # intelligent_selection
-                has_recent_best = (self.best_reward_step > self.last_target_update_step and 
-                                 self.decision_step - self.best_reward_step < 1000)
-                
-                if has_recent_best:
-                    self.target_network.load_state_dict(self.best_reward_network.state_dict())
-                    network_age = self.decision_step - self.best_reward_step
-                    phase = "探索后期" if self.decision_step < OBSERVE + EXPLORE else "利用期"
-                    logging.info(f"")
-                    logging.info(f"🎯🔥 DUELING DQN {phase.upper()} -> INTELLIGENT BEST NETWORK 🔥🎯")
-                    logging.info(f"   ├─ 最佳奖励: {self.best_reward:.3f}")
-                    logging.info(f"   ├─ 网络架构: Value + Advantage 分支")
-                    logging.info(f"   ├─ 网络年龄: {network_age}步 (< 1000步有效期)")
-                    logging.info(f"   └─ 切换原因: 智能选择最佳历史表现网络")
-                    logging.info(f"")
-                else:
-                    self.target_network.load_state_dict(self.q_network.state_dict())
-                    self.last_target_update_step = self.decision_step
-                    phase = "探索后期" if self.decision_step < OBSERVE + EXPLORE else "利用期"
-                    logging.info(f"")
-                    logging.info(f"🔄⏰ DUELING DQN {phase.upper()} -> INTELLIGENT REGULAR UPDATE ⏰🔄")
-                    logging.info(f"   ├─ 网络架构: Value + Advantage 分支")
-                    logging.info(f"   ├─ 当前决策步数: {self.decision_step}")
-                    if self.best_reward_step > 0:
-                        network_age = self.decision_step - self.best_reward_step
-                        logging.info(f"   ├─ 最佳网络年龄: {network_age}步 (> 1000步过期)")
-                        logging.info(f"   └─ 切换原因: 最佳网络过期，智能选择定时更新")
-                    else:
-                        logging.info(f"   └─ 切换原因: 智能选择定时更新 (尚无最佳网络)")
-                    logging.info(f"")
-    
-    def update_best_reward_network(self, episode_reward):
-        """更新最佳奖励网络 - 优化版本"""
-        should_update = False
+    def soft_update_target_network(self):
+        """使用Polyak平均法软更新目标网络"""
+        # 记录更新前的参数范数用于监控
+        if not hasattr(self, 'target_update_count'):
+            self.target_update_count = 0
         
-        if self.decision_step < OBSERVE:
-            # 观察期：不更新最佳网络，只记录最佳奖励用于参考
-            if episode_reward > self.best_reward:
-                self.best_reward = episode_reward
-                # 注意：不更新 best_reward_step 和 best_reward_network
-                logging.info(f"📈 观察期最佳奖励更新: {episode_reward:.3f} (仅记录，不保存网络)")
-            return  # 观察期直接返回，不保存网络
-        else:
-            # 训练期：正常更新最佳网络
-            should_update = (episode_reward > self.best_reward)
+        # 计算更新前后的参数差异
+        param_changes = []
+        for target_param, local_param in zip(self.target_network.parameters(), self.q_network.parameters()):
+            old_target = target_param.data.clone()
+            target_param.data.copy_(self.tau * local_param.data + (1.0 - self.tau) * target_param.data)
             
-        if should_update:
-            old_best = self.best_reward
-            improvement = episode_reward - old_best if old_best > -float('inf') else episode_reward
-            self.best_reward = episode_reward
-            self.best_reward_step = self.decision_step
-            self.best_reward_network.load_state_dict(self.q_network.state_dict())
-            
-            phase = "观察期" if self.decision_step < OBSERVE else "训练期"
-            logging.info(f"")
-            logging.info(f"🏆⭐ NEW BEST DUELING DQN NETWORK SAVED! ({phase}) ⭐🏆")
-            logging.info(f"   ├─ 新纪录: {episode_reward:.3f}")
-            logging.info(f"   ├─ 网络架构: Value + Advantage 分支")
-            if old_best > -float('inf'):
-                logging.info(f"   ├─ 提升幅度: +{improvement:.3f} (从 {old_best:.3f})")
-            logging.info(f"   ├─ 决策步数: {self.decision_step}")
-            logging.info(f"   └─ Dueling DQN优势: 分离状态价值和动作优势学习")
-            logging.info(f"")
+            # 记录参数变化幅度
+            if self.target_update_count % 1000 == 0:  # 每1000次更新记录一次
+                change = torch.norm(target_param.data - old_target).item()
+                param_changes.append(change)
+        
+        self.target_update_count += 1
+        
+        # 每1000次更新输出监控信息
+        if self.target_update_count % 1000 == 0:
+            avg_change = np.mean(param_changes) if param_changes else 0
+            print(f"🎯 目标网络更新 #{self.target_update_count} | 平均参数变化: {avg_change:.6f} | τ={self.tau}")
+    
+    # 传统固定间隔更新和最优网络策略已完全移除
+    # 当前仅使用软更新策略
     
     def update_epsilon(self):
         """更新探索率（使用决策步数）"""
@@ -594,18 +715,11 @@ def main():
     # 设置日志
     log_file = setup_logging()
     
-    # 显示设备信息
-    logging.info(f"使用设备: {device}")
-    logging.info(f"🎯 网络架构: Dueling DQN (Value + Advantage 分支)")
-    logging.info(f"🔥 核心优势: 分离状态价值和动作优势学习，提升训练效率")
+    # 系统初始化信息
+    device_info = str(device).upper()
     if torch.cuda.is_available():
-        logging.info(f"GPU: {torch.cuda.get_device_name()}")
-        logging.info(f"CUDA版本: {torch.version.cuda}")
-        
-        # 估算内存需求
-        batch_memory_mb = (BATCH * 4 * 80 * 80 * 4) / (1024 * 1024)
-        logging.info(f"预计批次内存需求: {batch_memory_mb:.1f}MB (BATCH={BATCH})")
-        logging.info(f"GPU显存: 4096MB, 预计利用率: {batch_memory_mb/4096*100:.1f}%")
+        device_info += f" ({torch.cuda.get_device_name()})"
+    logging.info(f"🚀 Dueling DQN 初始化 | 设备:{device_info} | 批次:{BATCH}")
     
     # 初始化游戏环境
     game_state = game.GameState()
@@ -613,11 +727,7 @@ def main():
     # 初始化增强版智能体
     agent = EnhancedDuelingDQNAgent(ACTIONS)
     
-    logging.info(f"🚀 增强版 Dueling DQN 智能体初始化完成")
-    logging.info(f"📊 网络架构: 增强版 Dueling DQN (更深的Value + Advantage 分支)")
-    logging.info(f"🎯 权重初始化: Kaiming 初始化 (更好的收敛性)")
-    logging.info(f"📉 观察期策略: 100%随机探索 (从头开始学习)")
-    logging.info(f"⚡ 优化超参数: 减少观察期 + 降低学习率 + 更频繁更新")
+    logging.info(f"⚙️  核心优化: LayerNorm+软更新(τ={agent.tau:.3f})+PER(α={agent.memory.alpha},β={agent.memory.beta:.2f})")
     
     # 获取初始状态
     do_nothing = np.zeros(ACTIONS)
@@ -632,16 +742,7 @@ def main():
     max_score = 0
     action_index = 0
     
-    logging.info("🎮 开始增强版 Dueling DQN 训练...")
-    logging.info(f"观察步数: {OBSERVE}, 探索步数: {EXPLORE}, 批次大小: {BATCH}")
-    logging.info(f"决策间隔: {FRAME_PER_ACTION}帧/动作, 游戏速度: 500FPS")
-    logging.info(f"🎯 增强版特色: 更深的Value/Advantage分支 + Dropout正则化")
-    logging.info(f"💡 理论优势: 更大网络容量 + 更好梯度流 + 防过拟合")
-    logging.info("🎯 智能目标网络: 自动选择最佳奖励网络或定时网络，提升训练稳定性")
-    
-    # 估算计算负载
-    decisions_per_sec = 500 // FRAME_PER_ACTION
-    logging.info(f"预计决策频率: {decisions_per_sec}次/秒 (vs 原250次/秒，减少{(1-decisions_per_sec/250)*100:.0f}%)")
+    logging.info(f"🎮 开始训练 | 观察:{OBSERVE} 探索:{EXPLORE} | {500//FRAME_PER_ACTION}决策/秒")
     
     while True:
         # 每FRAME_PER_ACTION帧做一次决策
@@ -671,57 +772,58 @@ def main():
             if agent.decision_step > OBSERVE:
                 train_stats = agent.train()
             
-            # 更新目标网络
-            agent.update_target_network()
+            # 软更新目标网络已在train()中完成
             
-            # 记录训练信息并绘图
+            # 训练监控 - 每1000步详细日志
             if agent.decision_step > OBSERVE and agent.decision_step % 1000 == 0 and train_stats is not None:
-                # 绘制训练进度图
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                plot_training_progress(agent, episode_count, timestamp)
+                plot_training_progress(agent, episode_count, datetime.now().strftime("%Y%m%d_%H%M%S"))
                 avg_reward = np.mean(agent.reward_history[-100:]) if agent.reward_history else 0
-                if agent.decision_step < OBSERVE:
-                    status = f"观察期 {agent.decision_step}/{OBSERVE}"
-                    strategy_info = "50%随机+50%预训练"
-                elif agent.decision_step < OBSERVE + EXPLORE:
-                    status = f"探索期 {agent.decision_step}/{OBSERVE + EXPLORE}"
-                    strategy_info = f"ε={agent.epsilon:.4f}"
+                
+                # 训练阶段状态
+                if agent.decision_step < OBSERVE + EXPLORE:
+                    phase = f"探索期 {agent.decision_step}/{OBSERVE + EXPLORE}"
                 else:
-                    status = "利用期"
-                    strategy_info = f"ε={agent.epsilon:.4f}"
+                    phase = "利用期"
                 
-                logging.info(f"[{status}] 决策步数: {agent.decision_step} | 策略: {strategy_info}")
-                logging.info(f"  损失: {train_stats['loss']:.4f} | 平均奖励: {avg_reward:.3f} | 最高分: {max_score:.3f}")
-                logging.info(f"  Q值 - 平均: {train_stats['current_q_mean']:.3f} | 最大: {train_stats['current_q_max']:.3f} | 最小: {train_stats['current_q_min']:.3f}")
-                logging.info(f"  动作Q值 - 不跳: {train_stats['q_values_action0']:.3f} | 跳跃: {train_stats['q_values_action1']:.3f}")
+                # 核心训练指标
+                logging.info(f"📊 [{phase}] 步数:{agent.decision_step} | 损失:{train_stats['loss']:.4f} | 均分:{avg_reward:.2f} | 最高:{max_score:.2f}")
+                logging.info(f"   🎯 Q值: {train_stats['current_q_mean']:.2f}±{train_stats['current_q_std']:.2f} | TD误差:{train_stats['td_error_mean']:.3f}")
+                logging.info(f"   🧠 V:{train_stats['value_mean']:.2f}±{train_stats['value_std']:.2f} | A-Range:{train_stats['advantage_range']:.2f}")
+                logging.info(f"   ⚙️  LR:{train_stats['learning_rate']:.2e} | ε:{train_stats['epsilon']:.4f} | β:{train_stats['per_beta']:.3f}")
                 
-                # Dueling DQN特有的分析
-                logging.info(f"  🎯 Value分析 - 平均: {train_stats['value_mean']:.3f} | 标准差: {train_stats['value_std']:.3f}")
-                logging.info(f"  🎯 Advantage分析 - 平均: {train_stats['advantage_mean']:.3f} | 标准差: {train_stats['advantage_std']:.3f}")
-                logging.info(f"  🎯 动作优势 - 不跳: {train_stats['advantage_action0']:.3f} | 跳跃: {train_stats['advantage_action1']:.3f}")
+                # 目标网络监控
+                logging.info(f"   🎯 目标网络: Q差异:{train_stats['target_main_q_diff']:.3f} | 比率:{train_stats['target_main_q_ratio']:.3f} | 更新次数:{train_stats['target_update_count']}")
                 
-                # GPU使用情况
-                if torch.cuda.is_available() and 'gpu_memory_used' in train_stats:
-                    logging.info(f"  GPU内存 - 已用: {train_stats['gpu_memory_used']:.1f}MB | 缓存: {train_stats['gpu_memory_cached']:.1f}MB")
+                # 训练稳定性监控  
+                logging.info(f"   📈 训练稳定性: 梯度范数:{train_stats['gradient_norm']:.3f} | Q稳定性:{train_stats['q_value_stability']:.3f} | 动作偏好:{train_stats['action_preference']:.3f}")
+                
+                # GPU和内存监控
+                if torch.cuda.is_available():
+                    logging.info(f"   💾 GPU:{train_stats['gpu_memory_used']:.0f}MB | 缓存:{train_stats['gpu_memory_cached']:.0f}MB")
+                
+                # 训练健康度评估
+                health_score = 100
+                warnings = []
+                
+                if train_stats['learning_rate'] < 1e-6:
+                    health_score -= 30
+                    warnings.append("学习率过低")
                     
-                    # 智能目标网络状态
-                    if agent.best_reward_step > 0:
-                        target_network_age = agent.decision_step - agent.best_reward_step
-                        
-                        if agent.decision_step < OBSERVE:
-                            network_type = "🎯最佳网络"
-                            status_icon = "📚观察期"
-                        elif agent.decision_step < OBSERVE + 500:
-                            network_type = "🎯最佳网络"
-                            status_icon = "🚀早期强制"
-                        else:
-                            is_using_best = (agent.best_reward_step > agent.last_target_update_step and target_network_age < 1000)
-                            network_type = "🎯最佳网络" if is_using_best else "🔄定时网络"
-                            status_icon = "✅有效" if target_network_age < 1000 else "⏰过期"
-                            
-                        logging.info(f"  🎯 Dueling目标网络 - 当前使用: {network_type} | 最佳奖励: {agent.best_reward:.3f} | 年龄: {target_network_age}步 ({status_icon})")
-                    else:
-                        logging.info(f"  🎯 Dueling目标网络 - 当前使用: 🔄定时网络 | 状态: 尚未发现最佳网络")
+                if train_stats['advantage_std'] < 0.01:
+                    health_score -= 20
+                    warnings.append("动作区分度不足")
+                    
+                if train_stats['gradient_norm'] < 0.001:
+                    health_score -= 15
+                    warnings.append("梯度过小")
+                    
+                if train_stats['target_main_q_diff'] > 10:
+                    health_score -= 25
+                    warnings.append("网络差异过大")
+                
+                health_status = "🟢 健康" if health_score >= 80 else "🟡 注意" if health_score >= 60 else "🔴 警告"
+                warning_text = f" ({', '.join(warnings)})" if warnings else ""
+                logging.info(f"   🏥 训练健康度: {health_status} {health_score}/100{warning_text}")
             
             # 更新探索率
             agent.update_epsilon()
@@ -735,93 +837,120 @@ def main():
             agent.reward_history.append(episode_reward)
             agent.episode_rewards.append(episode_reward)
             
-            # 保存最佳模型
+            # 保存最佳模型 (主网络 + 目标网络)
             if episode_reward > max_score:
                 max_score = episode_reward
                 os.makedirs("saved_networks", exist_ok=True)
-                torch.save(agent.q_network.state_dict(), 
-                          f"saved_networks/bird-dueling-dqn-best-{episode_reward:.3f}.pth")
-                logging.info(f"🏆 新的最佳增强版 Dueling DQN 模型已保存: bird-dueling-dqn-best-{episode_reward:.3f}.pth")
+                
+                # 保存主网络
+                main_net_path = f"saved_networks/bird-dueling-dqn-best-{episode_reward:.3f}.pth"
+                torch.save(agent.q_network.state_dict(), main_net_path)
+                
+                # 保存目标网络
+                target_net_path = f"saved_networks/bird-dueling-dqn-target-best-{episode_reward:.3f}.pth"
+                torch.save(agent.target_network.state_dict(), target_net_path)
+                
+                # 保存完整训练状态
+                checkpoint_path = f"saved_networks/bird-dueling-dqn-checkpoint-best-{episode_reward:.3f}.pth"
+                checkpoint = {
+                    'main_network': agent.q_network.state_dict(),
+                    'target_network': agent.target_network.state_dict(),
+                    'optimizer': agent.optimizer.state_dict(),
+                    'scheduler': agent.scheduler.state_dict(),
+                    'episode_count': episode_count,
+                    'decision_step': agent.decision_step,
+                    'max_score': max_score,
+                    'epsilon': agent.epsilon,
+                    'target_update_count': getattr(agent, 'target_update_count', 0)
+                }
+                torch.save(checkpoint, checkpoint_path)
+                
+                logging.info(f"🏆 新纪录! 分数:{episode_reward:.2f}")
+                logging.info(f"   💾 主网络: {main_net_path}")
+                logging.info(f"   🎯 目标网络: {target_net_path}")
+                logging.info(f"   📋 完整检查点: {checkpoint_path}")
             
-            # 更新最佳奖励网络
-            agent.update_best_reward_network(episode_reward)
-            
-            # 计算训练状态
+            # 训练阶段显示
             if agent.decision_step < OBSERVE:
-                status = f"观察期 ({agent.decision_step}/{OBSERVE})"
-                strategy_display = "100%随机探索"
+                phase = f"观察期({agent.decision_step}/{OBSERVE})"
             elif agent.decision_step < OBSERVE + EXPLORE:
-                status = f"探索期 ({agent.decision_step}/{OBSERVE + EXPLORE})"
-                strategy_display = f"ε: {agent.epsilon:.4f}"
+                phase = f"探索期({agent.decision_step}/{OBSERVE + EXPLORE})"
             else:
-                status = "利用期"
-                strategy_display = f"ε: {agent.epsilon:.4f}"
+                phase = "利用期"
             
-            # 当前目标网络状态
-            if agent.best_reward_step > 0:
-                if agent.decision_step < OBSERVE:
-                    network_type = "🎯最佳"
-                elif agent.decision_step < OBSERVE + 500:
-                    network_type = "🎯最佳"
-                else:
-                    target_network_age = agent.decision_step - agent.best_reward_step
-                    is_using_best = (agent.best_reward_step > agent.last_target_update_step and target_network_age < 1000)
-                    network_type = "🎯最佳" if is_using_best else "🔄定时"
-            else:
-                network_type = "🔄定时"
+            # 游戏结束日志 - 简洁格式  
+            logging.info(f"🎮 游戏{episode_count} | {phase} | 分数:{episode_reward:.2f} | 最高:{max_score:.2f} | ε:{agent.epsilon:.4f}")
             
-            logging.info(f"🎮 增强版 Dueling DQN 游戏 {episode_count} 结束 | 决策步数: {agent.decision_step} | {status} | "
-                        f"得分: {episode_reward:.3f} | 最高分: {max_score:.3f} | 策略: {strategy_display} | 目标网络: {network_type}")
+            # 每10局检查训练健康状况
+            if episode_count % 10 == 0 and episode_count > 0:
+                recent_scores = agent.reward_history[-10:] if len(agent.reward_history) >= 10 else agent.reward_history
+                avg_recent = np.mean(recent_scores) if recent_scores else 0
+                
+                if agent.decision_step > OBSERVE:
+                    # 检查性能停滞
+                    if len(agent.reward_history) >= 50:
+                        last_50 = np.mean(agent.reward_history[-50:])
+                        prev_50 = np.mean(agent.reward_history[-100:-50]) if len(agent.reward_history) >= 100 else last_50
+                        improvement = last_50 - prev_50
+                        
+                        if improvement < 0.1 and agent.decision_step > OBSERVE + 5000:
+                            logging.info(f"⚠️  性能停滞警告! 近50局平均分:{last_50:.2f}, 改善:{improvement:.2f}")
+                    
+                    logging.info(f"📊 第{episode_count}局 | 近10局平均:{avg_recent:.2f} | 决策步:{agent.decision_step}")
             
             episode_reward = 0
             
-            # 定期保存模型
+            # 定期保存模型 (每100局)
             if episode_count % 100 == 0:
                 os.makedirs("saved_networks", exist_ok=True)
-                torch.save(agent.q_network.state_dict(), 
-                          f"saved_networks/bird-dueling-dqn-{episode_count}.pth")
-                logging.info(f"定期增强版 Dueling DQN 模型已保存: bird-dueling-dqn-{episode_count}.pth")
+                
+                # 保存主网络
+                main_net_path = f"saved_networks/bird-dueling-dqn-{episode_count}.pth"
+                torch.save(agent.q_network.state_dict(), main_net_path)
+                
+                # 保存目标网络  
+                target_net_path = f"saved_networks/bird-dueling-dqn-target-{episode_count}.pth"
+                torch.save(agent.target_network.state_dict(), target_net_path)
+                
+                # 保存完整检查点
+                checkpoint_path = f"saved_networks/bird-dueling-dqn-checkpoint-{episode_count}.pth"
+                checkpoint = {
+                    'main_network': agent.q_network.state_dict(),
+                    'target_network': agent.target_network.state_dict(),
+                    'optimizer': agent.optimizer.state_dict(),
+                    'scheduler': agent.scheduler.state_dict(),
+                    'episode_count': episode_count,
+                    'decision_step': agent.decision_step,
+                    'max_score': max_score,
+                    'epsilon': agent.epsilon,
+                    'target_update_count': getattr(agent, 'target_update_count', 0),
+                    'reward_history': agent.reward_history[-100:],  # 保存最近100局的奖励
+                    'loss_history': agent.loss_history[-1000:] if hasattr(agent, 'loss_history') else []
+                }
+                torch.save(checkpoint, checkpoint_path)
+                
+                # 详细的保存日志
+                current_avg = np.mean(agent.reward_history[-10:]) if len(agent.reward_history) >= 10 else 0
+                logging.info(f"💾 定期保存 (第{episode_count}局)")
+                logging.info(f"   📊 当前状态: 决策步{agent.decision_step} | 近10局均分:{current_avg:.2f} | ε:{agent.epsilon:.4f}")
+                logging.info(f"   💾 主网络: {main_net_path}")
+                logging.info(f"   🎯 目标网络: {target_net_path}")
+                logging.info(f"   📋 完整检查点: {checkpoint_path}")
         
-        # 阶段提示和特殊处理
-        if agent.decision_step == OBSERVE:
-            # 观察期结束，进入探索期，重置最佳奖励并初始化最佳网络
-            observe_best_reward = agent.best_reward  # 保存观察期最高奖励用于日志
-            observe_max_score = max_score  # 保存观察期最高分用于日志
+            # 阶段转换提示 (只在决策帧检查)
+            if agent.decision_step == OBSERVE:
+                logging.info(f"🎆 观察期结束! 开始 Dueling DQN 训练...")
+            elif agent.decision_step == OBSERVE + EXPLORE:
+                logging.info(f"🏆 进入利用期! 主要使用已学策略...")
             
-            # 重置最佳奖励和最高分为较低基准，鼓励探索期快速突破
-            agent.best_reward = 0.14  
-            max_score = 0.14  # 同时重置最高分显示
-            agent.best_reward_network.load_state_dict(agent.q_network.state_dict())
-            agent.best_reward_step = agent.decision_step
-            
-            # 立即更换目标网络为最佳网络，不等待350步周期
-            agent.target_network.load_state_dict(agent.best_reward_network.state_dict())
-            
-            logging.info(f"")
-            logging.info(f"🎯🌟 重要节点：观察期结束，进入探索期！ 🌟🎯")
-            logging.info(f"   ├─ 观察期最高奖励: {observe_best_reward:.3f} (最高分: {observe_max_score:.3f})")
-            logging.info(f"   ├─ 重置最佳基准: {agent.best_reward:.3f} (最高分也重置为: {max_score:.3f})")
-            logging.info(f"   ├─ 立即初始化: 使用当前网络作为首个最佳网络")
-            logging.info(f"   ├─ 立即更换目标网络: 目标网络已切换为最佳网络 ⚡")
-            logging.info(f"   ├─ 开始训练: Value和Advantage分支开始分化学习")
-            logging.info(f"   └─ 智能机制: 后续将每350步检查是否需要更换")
-            logging.info(f"")
-        elif agent.decision_step == OBSERVE + EXPLORE:
-            logging.info(f"")
-            logging.info(f"🎯💪 重要节点：探索期结束，进入利用期！ 💪🎯")
-            logging.info(f"   ├─ 最终最佳奖励: {agent.best_reward:.3f}")
-            logging.info(f"   ├─ 学习成果: Value和Advantage分支已充分分化")
-            logging.info(f"   └─ 接下来: 主要利用已学习的策略优化表现")
-            logging.info(f"")
-        
-        # 定期提示进度
-        if agent.decision_step % 5000 == 0 and agent.decision_step > 0:
-            if agent.decision_step < OBSERVE:
-                remaining = OBSERVE - agent.decision_step
-                logging.info(f"📊 增强版 Dueling DQN 观察期进度：还需 {remaining} 步开始训练")
-            elif agent.decision_step < OBSERVE + EXPLORE:
-                remaining = OBSERVE + EXPLORE - agent.decision_step
-                logging.info(f"📊 增强版 Dueling DQN 探索期进度：还需 {remaining} 步进入利用期")
+            # 进度提示
+            if agent.decision_step % 5000 == 0 and agent.decision_step > 0:
+                if agent.decision_step < OBSERVE:
+                    remaining = OBSERVE - agent.decision_step
+                    logging.info(f"🔍 观察期: 还需{remaining}步开始训练")
+                elif agent.decision_step < OBSERVE + EXPLORE:
+                    remaining = OBSERVE + EXPLORE - agent.decision_step
+                    logging.info(f"🔍 探索期: 还需{remaining}步进入利用期")
 
 
 if __name__ == "__main__":
