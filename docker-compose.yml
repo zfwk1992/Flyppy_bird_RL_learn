@@ -12,6 +12,9 @@ services:
     environment:
       - CUDA_VISIBLE_DEVICES=0
       - PYTHONUNBUFFERED=1
+    # 💪 合理的内存限制，充分利用32GB系统内存
+    mem_limit: 28g  # 限制容器最大使用28GB内存，留4GB给系统
+    memswap_limit: 30g  # 包括swap的总限制
     deploy:
       resources:
         reservations:

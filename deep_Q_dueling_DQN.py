@@ -15,9 +15,7 @@ import os
 import logging
 import warnings
 from datetime import datetime
-import matplotlib.pyplot as plt
-import matplotlib
-matplotlib.use('Agg')  # 使用非交互式后端
+# 移除matplotlib依赖，使用GPU监控代替可视化
 
 # 抑制PNG sRGB警告
 warnings.filterwarnings("ignore", message=".*iCCP.*")
@@ -28,11 +26,14 @@ class SumTree:
     """
     SumTree数据结构用于优先经验回放
     支持O(log n)时间复杂度的采样和更新操作
+    🚨 内存优化：使用预分配固定数组避免对象引用泄漏
     """
     def __init__(self, capacity):
         self.capacity = capacity
         self.tree = np.zeros(2 * capacity - 1)
-        self.data = np.zeros(capacity, dtype=object)
+        # 🚨 修复内存泄漏：使用None初始化的list代替object数组
+        # 避免numpy object数组持有强引用导致的内存泄漏
+        self.data = [None] * capacity  # 改为普通list，GC可正常回收
         self.write = 0
         self.n_entries = 0
     
@@ -63,6 +64,11 @@ class SumTree:
     def add(self, priority, data):
         """添加新的经验和优先级"""
         idx = self.write + self.capacity - 1
+        
+        # 🚨 内存优化：显式删除旧数据，帮助GC回收
+        if self.data[self.write] is not None:
+            del self.data[self.write]  # 显式删除旧经验
+        
         self.data[self.write] = data
         self.update(idx, priority)
         
@@ -146,7 +152,7 @@ import game.wrapped_flappy_bird_fast as game
 # 设置设备
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 if torch.cuda.is_available():
-    torch.cuda.set_per_process_memory_fraction(0.8)
+    torch.cuda.set_per_process_memory_fraction(0.7)  # 💪 合理使用GPU内存，平衡性能与稳定性
 
 # 优化的超参数配置
 GAME = 'bird'
@@ -155,8 +161,8 @@ GAMMA = 0.995
 OBSERVE = 5000  # 减少观察期，更快开始训练
 EXPLORE = 25000
 FINAL_EPSILON = 0.001
-REPLAY_MEMORY = 20000
-BATCH = 256  # 减少批次大小，更频繁更新
+REPLAY_MEMORY = 20000  # 💪 恢复合理的内存缓冲区大小，利用28GB内存优势
+BATCH = 256            # 💪 恢复大批次训练，提升GPU利用率和训练稳定性
 FRAME_PER_ACTION = 4
 
 # 设置日志
@@ -178,164 +184,154 @@ def setup_logging():
     return log_filename
 
 
-def plot_training_progress(agent, episode_count, timestamp):
+def monitor_gpu_status():
     """
-    绘制训练进度图表
+    监控GPU状态和系统资源
+    
+    Returns:
+        dict: GPU状态信息
+    """
+    gpu_info = {}
+    
+    if torch.cuda.is_available():
+        try:
+            # GPU基本信息
+            gpu_info['gpu_count'] = torch.cuda.device_count()
+            gpu_info['current_device'] = torch.cuda.current_device()
+            gpu_info['device_name'] = torch.cuda.get_device_name()
+            
+            # 内存使用情况
+            gpu_info['memory_allocated'] = torch.cuda.memory_allocated() / 1024**2  # MB
+            gpu_info['memory_reserved'] = torch.cuda.memory_reserved() / 1024**2  # MB
+            gpu_info['max_memory_allocated'] = torch.cuda.max_memory_allocated() / 1024**2  # MB
+            gpu_info['max_memory_reserved'] = torch.cuda.max_memory_reserved() / 1024**2  # MB
+            
+            # 内存使用率
+            total_memory = torch.cuda.get_device_properties(0).total_memory / 1024**2
+            gpu_info['total_memory'] = total_memory
+            gpu_info['memory_usage_percent'] = (gpu_info['memory_allocated'] / total_memory) * 100
+            
+            # GPU利用率检查
+            try:
+                import subprocess
+                result = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu', '--format=csv,noheader,nounits'], 
+                                      capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    gpu_info['gpu_utilization'] = float(result.stdout.strip())
+                else:
+                    gpu_info['gpu_utilization'] = None
+            except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+                gpu_info['gpu_utilization'] = None
+                
+            # 温度监控
+            try:
+                result = subprocess.run(['nvidia-smi', '--query-gpu=temperature.gpu', '--format=csv,noheader,nounits'], 
+                                      capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    gpu_info['temperature'] = float(result.stdout.strip())
+                else:
+                    gpu_info['temperature'] = None
+            except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+                gpu_info['temperature'] = None
+                
+        except Exception as e:
+            logging.warning(f"GPU状态监控失败: {e}")
+            gpu_info['error'] = str(e)
+    else:
+        gpu_info['available'] = False
+        gpu_info['message'] = "CUDA不可用，使用CPU训练"
+    
+    return gpu_info
+
+
+def log_training_statistics(agent, episode_count, train_stats=None):
+    """
+    记录详细的训练统计信息
     
     Args:
         agent: DQN智能体
         episode_count: 当前局数
-        timestamp: 时间戳
+        train_stats: 训练统计数据
     """
     try:
-        # 创建保存目录
-        os.makedirs("logs/plots", exist_ok=True)
+        # GPU状态监控
+        gpu_info = monitor_gpu_status()
         
-        # 创建子图
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
-        fig.suptitle(f'增强版 Dueling DQN 训练进度 - 局数: {episode_count}', fontsize=16)
-        
-        # 图1: 奖励历史
+        # 训练进度统计
         if agent.episode_rewards:
-            episodes = list(range(1, len(agent.episode_rewards) + 1))
-            ax1.plot(episodes, agent.episode_rewards, 'b-', alpha=0.7, linewidth=1)
-            
-            # 添加移动平均线
-            if len(agent.episode_rewards) >= 10:
-                window_size = min(50, len(agent.episode_rewards) // 2)
-                moving_avg = []
-                for i in range(window_size-1, len(agent.episode_rewards)):
-                    avg = np.mean(agent.episode_rewards[i-window_size+1:i+1])
-                    moving_avg.append(avg)
-                
-                avg_episodes = list(range(window_size, len(agent.episode_rewards) + 1))
-                ax1.plot(avg_episodes, moving_avg, 'r-', linewidth=2, 
-                        label=f'移动平均({window_size}局)')
-                ax1.legend()
-            
-            ax1.set_title('每局奖励历史')
-            ax1.set_xlabel('局数')
-            ax1.set_ylabel('奖励')
-            ax1.grid(True, alpha=0.3)
-            
-            # 显示统计信息
-            max_reward = max(agent.episode_rewards)
-            avg_reward = np.mean(agent.episode_rewards[-100:]) if len(agent.episode_rewards) >= 100 else np.mean(agent.episode_rewards)
-            ax1.text(0.02, 0.98, f'最高: {max_reward:.2f}\n近100局平均: {avg_reward:.2f}', 
-                    transform=ax1.transAxes, verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-        
-        # 图2: 损失历史
-        if agent.loss_history and agent.training_steps:
-            ax2.plot(agent.training_steps, agent.loss_history, 'g-', alpha=0.7, linewidth=1)
-            
-            # 添加移动平均线
-            if len(agent.loss_history) >= 10:
-                window_size = min(100, len(agent.loss_history) // 2)
-                moving_avg_loss = []
-                for i in range(window_size-1, len(agent.loss_history)):
-                    avg = np.mean(agent.loss_history[i-window_size+1:i+1])
-                    moving_avg_loss.append(avg)
-                
-                avg_steps = agent.training_steps[window_size-1:]
-                ax2.plot(avg_steps, moving_avg_loss, 'orange', linewidth=2, 
-                        label=f'移动平均({window_size}步)')
-                ax2.legend()
-            
-            ax2.set_title('训练损失历史')
-            ax2.set_xlabel('训练步数')
-            ax2.set_ylabel('损失')
-            ax2.grid(True, alpha=0.3)
-            
-            # 显示统计信息
-            if agent.loss_history:
-                recent_loss = np.mean(agent.loss_history[-100:]) if len(agent.loss_history) >= 100 else np.mean(agent.loss_history)
-                ax2.text(0.02, 0.98, f'近100步平均损失: {recent_loss:.4f}', 
-                        transform=ax2.transAxes, verticalalignment='top',
-                        bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
-        
-        # 图3: 探索率变化
-        decision_steps = list(range(0, agent.decision_step + 1, 100))
-        epsilons = []
-        for step in decision_steps:
-            if step < OBSERVE:
-                epsilon = 1.0
-            elif step < OBSERVE + EXPLORE:
-                epsilon = 1.0 - (step - OBSERVE) / EXPLORE * (1.0 - FINAL_EPSILON)
-            else:
-                epsilon = FINAL_EPSILON
-            epsilons.append(epsilon)
-        
-        ax3.plot(decision_steps, epsilons, 'm-', linewidth=2)
-        ax3.axvline(x=OBSERVE, color='r', linestyle='--', alpha=0.7, label='观察期结束')
-        ax3.axvline(x=OBSERVE + EXPLORE, color='b', linestyle='--', alpha=0.7, label='探索期结束')
-        ax3.axvline(x=agent.decision_step, color='g', linestyle='-', alpha=0.7, label='当前位置')
-        ax3.set_title('探索率 (ε) 变化')
-        ax3.set_xlabel('决策步数')
-        ax3.set_ylabel('探索率')
-        ax3.legend()
-        ax3.grid(True, alpha=0.3)
-        
-        # 显示当前探索率
-        current_epsilon = agent.epsilon
-        ax3.text(0.02, 0.98, f'当前ε: {current_epsilon:.4f}', 
-                transform=ax3.transAxes, verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
-        
-        # 图4: 训练阶段显示
-        ax4.axis('off')
-        
-        # 计算当前阶段
-        if agent.decision_step < OBSERVE:
-            current_phase = "观察期"
-            phase_progress = agent.decision_step / OBSERVE
-            phase_color = 'orange'
-        elif agent.decision_step < OBSERVE + EXPLORE:
-            current_phase = "探索期"
-            phase_progress = (agent.decision_step - OBSERVE) / EXPLORE
-            phase_color = 'blue'
+            recent_rewards = agent.episode_rewards[-100:] if len(agent.episode_rewards) >= 100 else agent.episode_rewards
+            reward_stats = {
+                'count': len(agent.episode_rewards),
+                'mean': np.mean(recent_rewards),
+                'max': max(agent.episode_rewards),
+                'min': min(recent_rewards),
+                'std': np.std(recent_rewards)
+            }
         else:
-            current_phase = "利用期"
-            phase_progress = 1.0
-            phase_color = 'green'
+            reward_stats = {'count': 0, 'mean': 0, 'max': 0, 'min': 0, 'std': 0}
         
-        # 显示训练信息
-        info_text = f"""
-增强版 Dueling DQN 训练状态
-
-当前阶段: {current_phase}
-进度: {phase_progress:.1%}
-
-决策步数: {agent.decision_step:,}
-总局数: {episode_count}
-
-网络架构:
-- 卷积层: 2层 + BatchNorm
-- 共享层: 2层 (1024->1024)
-- Value 分支: 3层
-- Advantage 分支: 3层
-- Dropout: 0.3
-
-超参数:
-- 批次大小: {BATCH}
-- 学习率: 5e-4
-- 折扣因子: {GAMMA}
-        """
+        # 损失统计
+        if hasattr(agent, 'loss_history') and agent.loss_history:
+            recent_losses = agent.loss_history[-50:] if len(agent.loss_history) >= 50 else agent.loss_history
+            loss_stats = {
+                'count': len(agent.loss_history),
+                'mean': np.mean(recent_losses),
+                'min': min(recent_losses),
+                'max': max(recent_losses),
+                'std': np.std(recent_losses)
+            }
+        else:
+            loss_stats = {'count': 0, 'mean': 0, 'min': 0, 'max': 0, 'std': 0}
         
-        ax4.text(0.1, 0.95, info_text, transform=ax4.transAxes, 
-                verticalalignment='top', fontsize=10,
-                bbox=dict(boxstyle='round', facecolor=phase_color, alpha=0.2))
+        # 训练阶段
+        if agent.decision_step < OBSERVE:
+            phase = "观察期"
+            progress = agent.decision_step / OBSERVE
+        elif agent.decision_step < OBSERVE + EXPLORE:
+            phase = "探索期"
+            progress = (agent.decision_step - OBSERVE) / EXPLORE
+        else:
+            phase = "利用期"
+            progress = 1.0
         
-        # 保存图表
-        plt.tight_layout()
-        plot_filename = f"logs/plots/dueling_dqn_progress_{timestamp}_{episode_count:04d}.png"
-        plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
-        plt.close()
+        # 获取内存信息
+        memory_summary = ""
+        try:
+            import psutil
+            process = psutil.Process()
+            cpu_memory_mb = process.memory_info().rss / 1024 / 1024
+            memory_summary += f"CPU:{cpu_memory_mb:.0f}MB"
+            
+            if gpu_info.get('available', False):
+                gpu_memory_used = gpu_info.get('memory_allocated', 0)
+                gpu_memory_total = gpu_info.get('total_memory', 0)
+                memory_summary += f" | GPU:{gpu_memory_used:.0f}MB/{gpu_memory_total:.0f}MB"
+        except ImportError:
+            memory_summary = "N/A"
         
-        # logging.info(f"📈 训练进度图已保存: {plot_filename}")  # 减少冗余日志
+        # 详细日志记录
+        logging.info(f"📊 训练统计报告 - 第{episode_count}局 | 内存: {memory_summary}")
+        logging.info(f"   🎯 阶段: {phase} ({progress:.1%}) | 决策步: {agent.decision_step}")
+        logging.info(f"   🏆 奖励: 平均{reward_stats['mean']:.2f} | 最高{reward_stats['max']:.2f} | 标准差{reward_stats['std']:.2f}")
+        
+        if train_stats:
+            logging.info(f"   🧠 网络: Q值{train_stats['current_q_mean']:.2f}±{train_stats['current_q_std']:.2f} | 损失{loss_stats['mean']:.4f}")
+            logging.info(f"   ⚙️  训练: LR{train_stats['learning_rate']:.2e} | ε{train_stats['epsilon']:.4f} | 梯度{train_stats['gradient_norm']:.3f}")
+        
+        # GPU状态报告
+        if gpu_info.get('available', True):
+            logging.info(f"   🖥️  GPU: {gpu_info.get('device_name', 'Unknown')}")
+            logging.info(f"   💾 内存: {gpu_info.get('memory_allocated', 0):.0f}MB/{gpu_info.get('total_memory', 0):.0f}MB ({gpu_info.get('memory_usage_percent', 0):.1f}%)")
+            
+            if gpu_info.get('gpu_utilization') is not None:
+                logging.info(f"   📈 利用率: {gpu_info['gpu_utilization']:.1f}%")
+            if gpu_info.get('temperature') is not None:
+                logging.info(f"   🌡️  温度: {gpu_info['temperature']:.0f}°C")
+        else:
+            logging.info(f"   ⚠️  {gpu_info.get('message', 'GPU监控失败')}")
         
     except Exception as e:
-        logging.warning(f"⚠️ 绘图失败: {e}")
+        logging.warning(f"统计记录失败: {e}")
 
 
 class EnhancedDuelingDQN(nn.Module):
@@ -472,7 +468,7 @@ class EnhancedDuelingDQNAgent:
         self.target_network.load_state_dict(self.q_network.state_dict())
         
         # 软更新参数
-        self.tau = 5e-3  # 软更新系数 (从1e-3优化为5e-3，提升目标网络响应性)
+        self.tau = 1e-3  # 软更新系数 (恢复标准值，确保训练稳定性)
         
         # 优化器和学习率调度器
         self.optimizer = optim.AdamW(self.q_network.parameters(), lr=5e-4, weight_decay=1e-5)
@@ -485,10 +481,18 @@ class EnhancedDuelingDQNAgent:
         self.epsilon = 1.0
         self.step = 0  # 总帧数计数器
         self.decision_step = 0  # 决策步数计数器
-        self.reward_history = []
-        self.loss_history = []  # 记录损失历史
-        self.episode_rewards = []  # 记录每局奖励
-        self.training_steps = []  # 记录训练步数
+        
+        # 🚨 修复内存泄漏：严格限制历史记录长度，防止无限增长
+        self.reward_history = []  # 只保留最近50条
+        self.loss_history = []    # 只保留最近100条
+        self.episode_rewards = [] # 只保留最近30条
+        self.training_steps = []  # 只保留最近100条
+        
+        # 🚨 内存优化：严格限制历史记录长度，防止内存泄漏
+        self.max_reward_history = 30    # 进一步减少到30，够用即可
+        self.max_loss_history = 50      # 进一步减少到50，保持训练监控
+        self.max_episode_rewards = 20   # 减少到20，足够统计
+        self.max_training_steps = 50    # 大幅减少到50，减少内存占用
         
     def load_checkpoint(self, checkpoint_path):
         """加载完整的训练检查点"""
@@ -511,13 +515,13 @@ class EnhancedDuelingDQNAgent:
             if 'target_update_count' in checkpoint:
                 self.target_update_count = checkpoint['target_update_count']
             
-            print(f"✅ 检查点加载成功: {checkpoint_path}")
-            print(f"   📊 恢复状态: 决策步{self.decision_step} | ε:{self.epsilon:.4f}")
-            print(f"   🎯 目标网络更新次数: {getattr(self, 'target_update_count', 0)}")
+            logging.info(f"✅ 检查点加载成功: {checkpoint_path}")
+            logging.info(f"   📊 恢复状态: 决策步{self.decision_step} | ε:{self.epsilon:.4f}")
+            logging.info(f"   🎯 目标网络更新次数: {getattr(self, 'target_update_count', 0)}")
             
             return checkpoint.get('episode_count', 0), checkpoint.get('max_score', 0)
         else:
-            print(f"❌ 检查点文件不存在: {checkpoint_path}")
+            logging.warning(f"❌ 检查点文件不存在: {checkpoint_path}")
             return 0, 0
         
     def preprocess_state(self, state):
@@ -557,12 +561,16 @@ class EnhancedDuelingDQNAgent:
         
         # 优先级采样
         batch, idxs, is_weights = self.memory.sample(BATCH)
-        states = torch.FloatTensor([e[0] for e in batch]).to(device, non_blocking=True).permute(0, 3, 1, 2)
-        actions = torch.LongTensor([e[1] for e in batch]).to(device, non_blocking=True)
-        rewards = torch.FloatTensor([e[2] for e in batch]).to(device, non_blocking=True)
-        next_states = torch.FloatTensor([e[3] for e in batch]).to(device, non_blocking=True).permute(0, 3, 1, 2)
-        dones = torch.BoolTensor([e[4] for e in batch]).to(device, non_blocking=True)
-        is_weights = torch.FloatTensor(is_weights).to(device, non_blocking=True)
+        
+        # 🚨 修复内存泄漏：优化tensor创建，减少CPU端内存堆积
+        # 使用torch.stack避免list comprehension创建中间对象
+        # 移除non_blocking=True防止CPU端缓存堆积
+        states = torch.stack([torch.from_numpy(e[0]).float() for e in batch]).to(device).permute(0, 3, 1, 2)
+        actions = torch.tensor([e[1] for e in batch], dtype=torch.long, device=device)
+        rewards = torch.tensor([e[2] for e in batch], dtype=torch.float, device=device)
+        next_states = torch.stack([torch.from_numpy(e[3]).float() for e in batch]).to(device).permute(0, 3, 1, 2)
+        dones = torch.tensor([e[4] for e in batch], dtype=torch.bool, device=device)
+        is_weights = torch.tensor(is_weights, dtype=torch.float, device=device)
         
         # 当前Q值
         current_q_values = self.q_network(states)
@@ -581,48 +589,132 @@ class EnhancedDuelingDQNAgent:
         # 使用重要性采样权重的损失
         loss = (is_weights.unsqueeze(1) * F.smooth_l1_loss(current_q, target_q, reduction='none')).mean()
         
-        # 反向传播
+        # 反向传播和GPU内存监控
         self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), 1.0)
         self.optimizer.step()
         
+        # 🚨 更频繁的GPU缓存清理，防止OOM
+        if hasattr(self, '_train_count'):
+            self._train_count += 1
+        else:
+            self._train_count = 1
+            
+        # 保存统计信息（在清理前）
+        target_q_mean = target_q.mean().item()
+        current_q_mean = current_q.mean().item()
+        current_q_max = current_q.max().item()
+        current_q_min = current_q.min().item()
+        current_q_std = current_q.std().item()
+        reward_mean = rewards.mean().item()
+        q_values_action0 = current_q_values[:, 0].mean().item()
+        q_values_action1 = current_q_values[:, 1].mean().item()
+        
+        # 保存Dueling DQN特有的分析（在清理前）
+        with torch.no_grad():
+            value, advantage = self.q_network.get_value_and_advantage(states)
+            value_mean = value.mean().item()
+            value_std = value.std().item()
+            advantage_mean = advantage.mean().item()
+            advantage_std = advantage.std().item()
+            advantage_action0 = advantage[:, 0].mean().item()
+            advantage_action1 = advantage[:, 1].mean().item()
+            
+        # 保存td_errors用于优先级更新（在清理前）
+        td_errors_cpu = td_errors.detach().cpu().numpy().flatten()
+        
+        # 保存其他统计信息（在清理前）
+        is_weight_mean = is_weights.mean().item()
+        advantage_range = (advantage.max() - advantage.min()).item()
+        q_value_range = (current_q_values.max() - current_q_values.min()).item()
+        
+        # 保存目标网络统计（在清理前）
+        with torch.no_grad():
+            target_q_values = self.target_network(states)
+            target_q_selected = target_q_values.gather(1, actions.unsqueeze(1))
+            network_diff_mean = (current_q - target_q_selected).abs().mean().item()
+            network_diff_max = (current_q - target_q_selected).abs().max().item()
+            target_q_values_mean = target_q_values.mean().item()
+            target_q_values_std = target_q_values.std().item()
+        
+        # 🚨 内存优化：更频繁的清理，防止内存堆积
+        if self._train_count % 50 == 0:  # 从100改为50，更频繁清理
+            # GPU内存清理
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                current_memory = torch.cuda.memory_allocated(device) / 1024**2
+                reserved_memory = torch.cuda.memory_reserved(device) / 1024**2
+                if current_memory > 150:  # 降低阈值，更早清理
+                    logging.warning(f"🚨 GPU内存较高: {current_memory:.0f}MB(已用)/{reserved_memory:.0f}MB(预留)")
+                    torch.cuda.empty_cache()
+            
+            # 🚨 强制CPU内存垃圾回收，清理循环引用
+            import gc
+            gc.collect()  # 先回收一般垃圾
+            gc.collect()  # 再次回收循环引用
+            
+            # 🚨 清理大的tensor变量引用
+            try:
+                del states, next_states, current_q_values, target_q, td_errors
+            except NameError:
+                pass
+        
         # 返回训练统计信息（包括Dueling DQN特有的分析）
         train_stats = {
             'loss': loss.item(),
-            'current_q_mean': current_q.mean().item(),
-            'current_q_max': current_q.max().item(),
-            'current_q_min': current_q.min().item(),
-            'current_q_std': current_q.std().item(),
-            'target_q_mean': target_q.mean().item(),
-            'reward_mean': rewards.mean().item(),
-            'q_values_action0': current_q_values[:, 0].mean().item(),
-            'q_values_action1': current_q_values[:, 1].mean().item()
+            'current_q_mean': current_q_mean,
+            'current_q_max': current_q_max,
+            'current_q_min': current_q_min,
+            'current_q_std': current_q_std,
+            'target_q_mean': target_q_mean,
+            'reward_mean': reward_mean,
+            'q_values_action0': q_values_action0,
+            'q_values_action1': q_values_action1
         }
         
-        # 添加Dueling DQN特有的分析
-        with torch.no_grad():
-            value, advantage = self.q_network.get_value_and_advantage(states)
-            train_stats['value_mean'] = value.mean().item()
-            train_stats['value_std'] = value.std().item()
-            train_stats['advantage_mean'] = advantage.mean().item()
-            train_stats['advantage_std'] = advantage.std().item()
-            train_stats['advantage_action0'] = advantage[:, 0].mean().item()
-            train_stats['advantage_action1'] = advantage[:, 1].mean().item()
+        # 添加Dueling DQN特有的分析（使用预先保存的值）
+        train_stats['value_mean'] = value_mean
+        train_stats['value_std'] = value_std
+        train_stats['advantage_mean'] = advantage_mean
+        train_stats['advantage_std'] = advantage_std
+        train_stats['advantage_action0'] = advantage_action0
+        train_stats['advantage_action1'] = advantage_action1
         
-        # 添加GPU内存使用监控
+        # 添加详细GPU监控
         if torch.cuda.is_available():
             train_stats['gpu_memory_used'] = torch.cuda.memory_allocated(device) / 1024**2
             train_stats['gpu_memory_cached'] = torch.cuda.memory_reserved(device) / 1024**2
+            train_stats['gpu_memory_max'] = torch.cuda.max_memory_allocated(device) / 1024**2
+            
+            # GPU利用率监控
+            try:
+                import subprocess
+                result = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu', '--format=csv,noheader,nounits'], 
+                                      capture_output=True, text=True, timeout=3)
+                if result.returncode == 0:
+                    train_stats['gpu_utilization'] = float(result.stdout.strip())
+            except:
+                train_stats['gpu_utilization'] = None
         
-        # 更新优先级
-        td_errors_cpu = td_errors.detach().cpu().numpy().flatten()
+        # 更新优先级（使用预先保存的值）
         self.memory.update_priorities(idxs, td_errors_cpu)
         
-        # 记录损失用于绘图
+        # 🚨 修复内存泄漏：严格控制历史记录，立即清理
         if hasattr(self, 'loss_history'):
             self.loss_history.append(loss.item())
+            # 🚨 内存优化：立即清理而非等到超限，保持固定大小
+            if len(self.loss_history) >= self.max_loss_history:
+                # 保留最新的一半，立即释放旧数据
+                old_history = self.loss_history
+                self.loss_history = self.loss_history[-self.max_loss_history//2:]
+                del old_history  # 显式删除旧list
+                
             self.training_steps.append(self.decision_step)
+            if len(self.training_steps) >= self.max_training_steps:
+                old_steps = self.training_steps
+                self.training_steps = self.training_steps[-self.max_training_steps//2:]
+                del old_steps  # 显式删除旧list
         
         # 软更新目标网络
         self.soft_update_target_network()
@@ -631,45 +723,57 @@ class EnhancedDuelingDQNAgent:
         if self.decision_step % 10000 == 0:
             self.scheduler.step()
             current_lr = self.optimizer.param_groups[0]['lr']
-            print(f"🔧 学习率更新: {current_lr:.2e} (步数:{self.decision_step})")
+            logging.info(f"🔧 学习率更新: {current_lr:.2e} (步数:{self.decision_step})")
             if current_lr < 5e-5:
-                print(f"⚠️  学习率过低警告! 当前:{current_lr:.2e}, 可能影响学习效果")
+                logging.warning(f"⚠️  学习率过低警告! 当前:{current_lr:.2e}, 可能影响学习效果")
         
         # 添加PER相关统计信息
         train_stats['td_error_mean'] = np.abs(td_errors_cpu).mean()
         train_stats['td_error_max'] = np.abs(td_errors_cpu).max()
-        train_stats['is_weight_mean'] = is_weights.mean().item()
+        train_stats['is_weight_mean'] = is_weight_mean
         train_stats['per_beta'] = self.memory.beta
         
-        # 训练健康监控指标
+        # 训练健康监控指标（使用预先保存的值）
         train_stats['learning_rate'] = self.optimizer.param_groups[0]['lr']
         train_stats['epsilon'] = self.epsilon
-        train_stats['advantage_range'] = (advantage.max() - advantage.min()).item()
-        train_stats['q_value_range'] = (current_q_values.max() - current_q_values.min()).item()
+        train_stats['advantage_range'] = advantage_range
+        train_stats['q_value_range'] = q_value_range
         
-        # 目标网络与主网络差异监控
-        with torch.no_grad():
-            target_q_values = self.target_network(states)
-            target_q_selected = target_q_values.gather(1, actions.unsqueeze(1))
-            
-            # 网络差异指标
-            train_stats['target_main_q_diff'] = torch.abs(target_q_selected - current_q).mean().item()
-            train_stats['target_main_q_ratio'] = (target_q_selected.mean() / (current_q.mean() + 1e-8)).item()
-            
-            # 训练稳定性指标
-            train_stats['gradient_norm'] = sum(p.grad.norm().item() for p in self.q_network.parameters() if p.grad is not None)
-            train_stats['target_update_count'] = getattr(self, 'target_update_count', 0)
-            
-            # 网络收敛监控
-            train_stats['q_value_stability'] = current_q.std().item() / (current_q.mean().abs().item() + 1e-8)
-            train_stats['action_preference'] = torch.abs(current_q_values[:, 0].mean() - current_q_values[:, 1].mean()).item()
+        # 目标网络与主网络差异监控（使用预先保存的值）
+        train_stats['network_diff_mean'] = network_diff_mean
+        train_stats['network_diff_max'] = network_diff_max
+        train_stats['target_q_values_mean'] = target_q_values_mean
+        train_stats['target_q_values_std'] = target_q_values_std
         
-        # 检查训练停滞预警
+        # 额外的网络差异指标（使用预先保存的值）
+        train_stats['target_main_q_diff'] = network_diff_mean
+        train_stats['target_main_q_ratio'] = (target_q_values_mean / (current_q_mean + 1e-8))
+        
+        # 训练稳定性指标
+        train_stats['gradient_norm'] = sum(p.grad.norm().item() for p in self.q_network.parameters() if p.grad is not None)
+        train_stats['target_update_count'] = getattr(self, 'target_update_count', 0)
+        
+        # 网络收敛监控（使用预先保存的值）
+        train_stats['q_value_stability'] = current_q_std / (abs(current_q_mean) + 1e-8)
+        train_stats['action_preference'] = abs(q_values_action0 - q_values_action1)
+        
+        # 检查训练停滞预警和GPU状态
         if train_stats['learning_rate'] < 1e-6:
-            print("⚠️  警告: 学习率过低 ({:.2e})，可能导致训练停滞！".format(train_stats['learning_rate']))
+            logging.warning("⚠️  警告: 学习率过低 ({:.2e})，可能导致训练停滞！".format(train_stats['learning_rate']))
         
         if train_stats['advantage_std'] < 0.01:
-            print("⚠️  警告: Advantage标准差过小 ({:.4f})，动作区分度不足！".format(train_stats['advantage_std']))
+            logging.warning("⚠️  警告: Advantage标准差过小 ({:.4f})，动作区分度不足！".format(train_stats['advantage_std']))
+            
+        # GPU状态检查 - 修复错误的内存监控逻辑
+        if torch.cuda.is_available():
+            current_memory = torch.cuda.memory_allocated(device) / 1024**2
+            reserved_memory = torch.cuda.memory_reserved(device) / 1024**2
+            total_memory = torch.cuda.get_device_properties(device).total_memory / 1024**2
+            
+            # 使用预留内存与总内存的比例进行检查
+            if reserved_memory > total_memory * 0.9:
+                logging.warning(f"⚠️  GPU内存预留接近极限: {reserved_memory:.0f}MB/{total_memory:.0f}MB ({reserved_memory/total_memory*100:.1f}%)")
+                torch.cuda.empty_cache()
         
         return train_stats
     
@@ -695,7 +799,7 @@ class EnhancedDuelingDQNAgent:
         # 每1000次更新输出监控信息
         if self.target_update_count % 1000 == 0:
             avg_change = np.mean(param_changes) if param_changes else 0
-            print(f"🎯 目标网络更新 #{self.target_update_count} | 平均参数变化: {avg_change:.6f} | τ={self.tau}")
+            logging.info(f"🎯 目标网络更新 #{self.target_update_count} | 平均参数变化: {avg_change:.6f} | τ={self.tau}")
     
     # 传统固定间隔更新和最优网络策略已完全移除
     # 当前仅使用软更新策略
@@ -719,7 +823,31 @@ def main():
     device_info = str(device).upper()
     if torch.cuda.is_available():
         device_info += f" ({torch.cuda.get_device_name()})"
-    logging.info(f"🚀 Dueling DQN 初始化 | 设备:{device_info} | 批次:{BATCH}")
+    # 获取初始化时的内存状态
+    try:
+        import psutil
+        process = psutil.Process()
+        init_cpu_mem = process.memory_info().rss / 1024 / 1024
+        init_mem_info = f"CPU:{init_cpu_mem:.0f}MB"
+        if torch.cuda.is_available():
+            init_gpu_mem = torch.cuda.memory_allocated(device) / 1024**2
+            init_mem_info += f" | GPU:{init_gpu_mem:.0f}MB"
+    except ImportError:
+        init_mem_info = "N/A"
+    
+    logging.info(f"🚀 Dueling DQN 初始化 | 设备:{device_info} | 批次:{BATCH} | 内存:{init_mem_info}")
+    
+    # 初始化GPU监控
+    if torch.cuda.is_available():
+        gpu_info = monitor_gpu_status()
+        logging.info(f"🖥️  GPU初始化: {gpu_info.get('device_name', 'Unknown')}")
+        logging.info(f"   总内存: {gpu_info.get('total_memory', 0):.0f}MB | 当前使用: {gpu_info.get('memory_allocated', 0):.1f}MB")
+        if gpu_info.get('temperature'):
+            logging.info(f"   温度: {gpu_info['temperature']:.0f}°C")
+        
+        # 设置GPU内存监控
+        torch.cuda.empty_cache()  # 清理未使用的缓存
+        logging.info(f"   ✨ GPU缓存已清理，开始训练监控")
     
     # 初始化游戏环境
     game_state = game.GameState()
@@ -728,6 +856,8 @@ def main():
     agent = EnhancedDuelingDQNAgent(ACTIONS)
     
     logging.info(f"⚙️  核心优化: LayerNorm+软更新(τ={agent.tau:.3f})+PER(α={agent.memory.alpha},β={agent.memory.beta:.2f})")
+    logging.info(f"🎯 科学奖励机制: 管道+20分 | 衰减生存1e-4*(0.999^t) | 死亡-2分 | 潜能函数塑形")
+    logging.info(f"🚨 内存优化配置: 缓冲区{REPLAY_MEMORY} | 批次{BATCH} | GPU内存40% | 50步清理")
     
     # 获取初始状态
     do_nothing = np.zeros(ACTIONS)
@@ -742,7 +872,27 @@ def main():
     max_score = 0
     action_index = 0
     
-    logging.info(f"🎮 开始训练 | 观察:{OBSERVE} 探索:{EXPLORE} | {500//FRAME_PER_ACTION}决策/秒")
+    # 🚨 最小化奖励统计变量
+    pipe_rewards_count = 0        # 管道奖励次数  
+    survival_frames = 0           # 当前局存活帧数
+    
+    # 获取初始内存状态
+    try:
+        import psutil
+        process = psutil.Process()
+        initial_cpu_mem = process.memory_info().rss / 1024 / 1024
+        mem_info = f"CPU:{initial_cpu_mem:.0f}MB"
+        if torch.cuda.is_available():
+            initial_gpu_mem = torch.cuda.memory_allocated(device) / 1024**2
+            mem_info += f" | GPU:{initial_gpu_mem:.0f}MB"
+    except ImportError:
+        mem_info = "N/A"
+    
+    logging.info(f"🎮 开始训练 | 观察:{OBSERVE} 探索:{EXPLORE} | {500//FRAME_PER_ACTION}决策/秒 | 初始内存:{mem_info}")
+    
+    # 训练开始时的系统检查
+    if torch.cuda.is_available():
+        logging.info(f"🖥️  GPU训练准备就绪，开启实时监控...")
     
     while True:
         # 每FRAME_PER_ACTION帧做一次决策
@@ -758,10 +908,23 @@ def main():
         x_t1_colored, r_t, terminal = game_state.frame_step(a_t)
         x_t1 = agent.preprocess_state(x_t1_colored)
         x_t1 = np.reshape(x_t1, (80, 80, 1))
-        s_t1 = np.append(x_t1, s_t[:, :, :3], axis=2)
+        # 🚨 优化内存：使用concatenate而不是append，避免额外内存分配
+        s_t1 = np.concatenate([x_t1, s_t[:, :, :3]], axis=2)
         
         episode_reward += r_t
         agent.step += 1
+        
+        # 🚨 极简化奖励统计，最小化内存使用
+        survival_frames += 1
+        
+        # 🚨 只在关键时刻记录，减少内存和计算
+        if r_t > 15:  # 管道奖励 (20分)
+            pipe_rewards_count += 1
+            # 大幅减少日志输出，每10个管道报告一次
+            if pipe_rewards_count % 10 == 1:
+                logging.info(f"🏆 管道里程碑! {pipe_rewards_count}个管道 | 总分: {episode_reward:.1f}")
+        # 🚨 移除死亡惩罚的详细日志，减少输出
+        # 🚨 移除复杂的奖励累加，只保留必要统计
         
         # 只在决策帧存储经验和训练
         if agent.step % FRAME_PER_ACTION == 0:
@@ -771,13 +934,42 @@ def main():
             # 训练网络（仅训练期）
             if agent.decision_step > OBSERVE:
                 train_stats = agent.train()
+                
+                # 每100步简要训练日志 + 内存监控（修复BUG：确保在训练期）
+                if agent.decision_step % 100 == 0 and train_stats is not None:
+                    avg_reward = np.mean(agent.reward_history[-10:]) if len(agent.reward_history) >= 10 else 0
+                    
+                    # 添加内存使用监控
+                    try:
+                        import psutil
+                        process = psutil.Process()
+                        memory_mb = process.memory_info().rss / 1024 / 1024
+                        memory_info = f" | 内存:{memory_mb:.0f}MB"
+                    except ImportError:
+                        memory_info = ""
+                    
+                    logging.info(f"🧠 训练步{agent.decision_step} | 损失:{train_stats['loss']:.4f} | 近10局均分:{avg_reward:.2f} | Q值:{train_stats['current_q_mean']:.2f}±{train_stats['current_q_std']:.2f}{memory_info}")
             
             # 软更新目标网络已在train()中完成
             
-            # 训练监控 - 每1000步详细日志
-            if agent.decision_step > OBSERVE and agent.decision_step % 1000 == 0 and train_stats is not None:
-                plot_training_progress(agent, episode_count, datetime.now().strftime("%Y%m%d_%H%M%S"))
+            # 训练监控 - 每250步详细日志（更频繁的监控）
+            if agent.decision_step > OBSERVE and agent.decision_step % 250 == 0 and train_stats is not None:
                 avg_reward = np.mean(agent.reward_history[-100:]) if agent.reward_history else 0
+                
+                # 🎯 新奖励机制下的表现分析 + 内存监控
+                estimated_pipes_per_episode = avg_reward / 20 if avg_reward > 0 else 0
+                logging.info(f"🎯 奖励分析: 平均{avg_reward:.2f}分/局 ≈ {estimated_pipes_per_episode:.1f}个管道/局")
+                
+                # 🚨 内存使用监控
+                try:
+                    import psutil
+                    process = psutil.Process()
+                    memory_mb = process.memory_info().rss / 1024 / 1024
+                    logging.info(f"🧠 系统内存: {memory_mb:.0f}MB | 奖励历史:{len(agent.reward_history)} | 损失历史:{len(agent.loss_history)}")
+                    if memory_mb > 8000:  # 超过8GB警告
+                        logging.warning(f"⚠️ 内存使用过高: {memory_mb:.0f}MB，接近容器限制")
+                except ImportError:
+                    pass  # psutil不可用时忽略
                 
                 # 训练阶段状态
                 if agent.decision_step < OBSERVE + EXPLORE:
@@ -799,7 +991,16 @@ def main():
                 
                 # GPU和内存监控
                 if torch.cuda.is_available():
-                    logging.info(f"   💾 GPU:{train_stats['gpu_memory_used']:.0f}MB | 缓存:{train_stats['gpu_memory_cached']:.0f}MB")
+                    gpu_util_text = f" | 利用率:{train_stats['gpu_utilization']:.1f}%" if train_stats.get('gpu_utilization') else ""
+                    logging.info(f"   💾 GPU:{train_stats['gpu_memory_used']:.0f}MB | 缓存:{train_stats['gpu_memory_cached']:.0f}MB{gpu_util_text}")
+                    
+                    # GPU健康检查 - 使用预留内存作为参考
+                    total_memory = torch.cuda.get_device_properties(device).total_memory / 1024**2
+                    if train_stats['gpu_memory_cached'] > total_memory * 0.8:
+                        logging.warning(f"   ⚠️  GPU内存预留率较高: {train_stats['gpu_memory_cached']:.0f}MB/{total_memory:.0f}MB ({train_stats['gpu_memory_cached']/total_memory*100:.1f}%)")
+                    
+                    if train_stats.get('gpu_utilization') and train_stats['gpu_utilization'] < 50:
+                        logging.warning(f"   ⚠️  GPU利用率较低: {train_stats['gpu_utilization']:.1f}%，可能存在性能瓶颈")
                 
                 # 训练健康度评估
                 health_score = 100
@@ -834,8 +1035,32 @@ def main():
         # 游戏结束处理
         if terminal:
             episode_count += 1
+            
+            # 🚨 内存优化：严格控制历史记录增长，立即清理防止泄漏
             agent.reward_history.append(episode_reward)
+            # 立即清理而非等到超限，保持固定大小
+            if len(agent.reward_history) >= agent.max_reward_history:
+                old_reward_history = agent.reward_history
+                agent.reward_history = agent.reward_history[-agent.max_reward_history//2:]
+                del old_reward_history  # 显式删除旧数据
+                
             agent.episode_rewards.append(episode_reward)
+            if len(agent.episode_rewards) >= agent.max_episode_rewards:
+                old_episode_rewards = agent.episode_rewards
+                agent.episode_rewards = agent.episode_rewards[-agent.max_episode_rewards//2:]
+                del old_episode_rewards  # 显式删除旧数据
+            
+            # 🚨 更频繁的垃圾回收和内存清理，防止内存泄漏
+            if episode_count % 10 == 0:
+                import gc
+                gc.collect()
+                # 强制清理PyTorch缓存
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            
+            # 🚨 最小化奖励统计报告
+            if episode_count % 50 == 0 and pipe_rewards_count > 0:  # 每50局报告一次
+                logging.info(f"🎯 进度检查点 [第{episode_count}局]: {pipe_rewards_count}个管道 | 分数: {episode_reward:.1f}")
             
             # 保存最佳模型 (主网络 + 目标网络)
             if episode_reward > max_score:
@@ -878,27 +1103,78 @@ def main():
             else:
                 phase = "利用期"
             
-            # 游戏结束日志 - 简洁格式  
-            logging.info(f"🎮 游戏{episode_count} | {phase} | 分数:{episode_reward:.2f} | 最高:{max_score:.2f} | ε:{agent.epsilon:.4f}")
+            # 游戏结束日志 - 简洁格式 + 完整内存监控
+            memory_info = ""
+            try:
+                import psutil
+                process = psutil.Process()
+                cpu_memory_mb = process.memory_info().rss / 1024 / 1024
+                memory_info += f" | CPU内存:{cpu_memory_mb:.0f}MB"
+                
+                # GPU内存监控
+                if torch.cuda.is_available():
+                    gpu_memory_used = torch.cuda.memory_allocated(device) / 1024**2
+                    gpu_memory_cached = torch.cuda.memory_reserved(device) / 1024**2
+                    memory_info += f" | GPU:{gpu_memory_used:.0f}MB/{gpu_memory_cached:.0f}MB"
+                    
+            except ImportError:
+                memory_info = " | 内存:N/A"
+            
+            logging.info(f"🎮 游戏{episode_count} | {phase} | 分数:{episode_reward:.2f} | 最高:{max_score:.2f} | ε:{agent.epsilon:.4f}{memory_info}")
             
             # 每10局检查训练健康状况
             if episode_count % 10 == 0 and episode_count > 0:
                 recent_scores = agent.reward_history[-10:] if len(agent.reward_history) >= 10 else agent.reward_history
                 avg_recent = np.mean(recent_scores) if recent_scores else 0
                 
+                # GPU健康检查
+                if torch.cuda.is_available():
+                    current_gpu_memory = torch.cuda.memory_allocated(device) / 1024**2
+                    reserved_gpu_memory = torch.cuda.memory_reserved(device) / 1024**2
+                    total_gpu_memory = torch.cuda.get_device_properties(device).total_memory / 1024**2
+                    
+                    # 使用预留内存作为参考，如果预留内存超过总内存的80%则警告
+                    if reserved_gpu_memory > total_gpu_memory * 0.8:
+                        logging.warning(f"⚠️  GPU内存预留量较高: {reserved_gpu_memory:.0f}MB/{total_gpu_memory:.0f}MB ({reserved_gpu_memory/total_gpu_memory*100:.1f}%)")
+                        torch.cuda.empty_cache()  # 清理缓存
+                        logging.info(f"   ✨ 已清理GPU缓存")
+                
                 if agent.decision_step > OBSERVE:
                     # 检查性能停滞
-                    if len(agent.reward_history) >= 50:
+                    if len(agent.reward_history) >= 25:
                         last_50 = np.mean(agent.reward_history[-50:])
-                        prev_50 = np.mean(agent.reward_history[-100:-50]) if len(agent.reward_history) >= 100 else last_50
-                        improvement = last_50 - prev_50
+                        prev_25 = np.mean(agent.reward_history[-50:-25]) if len(agent.reward_history) >= 50 else last_50
+                        improvement = last_50 - prev_25
                         
-                        if improvement < 0.1 and agent.decision_step > OBSERVE + 5000:
-                            logging.info(f"⚠️  性能停滞警告! 近50局平均分:{last_50:.2f}, 改善:{improvement:.2f}")
+                        # 🎯 更新性能停滞检查阈值（新奖励机制下）
+                        # 考虑新奖励机制：管道奖励20分，期望改善阈值提高
+                        improvement_threshold = 1.0  # 从0.1提升到1.0，匹配新奖励规模
+                        if improvement < improvement_threshold and agent.decision_step > OBSERVE + 5000:
+                            logging.warning(f"⚠️  性能停滞警告! 近50局平均分:{last_50:.2f}, 改善:{improvement:.2f} (阈值:{improvement_threshold})")
+                            
+                            # 🎯 新奖励机制下的性能解释
+                            estimated_pipes = int(last_50 / 20)  # 估算通过的管道数
+                            logging.info(f"   📊 性能解读: 约通过{estimated_pipes}个管道/局 | 管道奖励占比≈{(estimated_pipes*20/last_50*100) if last_50 > 0 else 0:.1f}%")
                     
-                    logging.info(f"📊 第{episode_count}局 | 近10局平均:{avg_recent:.2f} | 决策步:{agent.decision_step}")
+                    # 获取当前内存状态
+                    try:
+                        import psutil
+                        process = psutil.Process()
+                        cpu_mem = process.memory_info().rss / 1024 / 1024
+                        mem_info = f"CPU:{cpu_mem:.0f}MB"
+                        if torch.cuda.is_available():
+                            gpu_mem = torch.cuda.memory_allocated(device) / 1024**2
+                            mem_info += f" | GPU:{gpu_mem:.0f}MB"
+                    except ImportError:
+                        mem_info = "N/A"
+                    
+                    logging.info(f"📊 第{episode_count}局 | 近10局平均:{avg_recent:.2f} | 决策步:{agent.decision_step} | 内存:{mem_info}")
             
             episode_reward = 0
+            
+            # 🚨 重置奖励统计（最小化）
+            pipe_rewards_count = 0
+            survival_frames = 0
             
             # 定期保存模型 (每100局)
             if episode_count % 100 == 0:
@@ -924,7 +1200,7 @@ def main():
                     'max_score': max_score,
                     'epsilon': agent.epsilon,
                     'target_update_count': getattr(agent, 'target_update_count', 0),
-                    'reward_history': agent.reward_history[-100:],  # 保存最近100局的奖励
+                    'reward_history': agent.reward_history[-50:],   # 保存最近50局的奖励
                     'loss_history': agent.loss_history[-1000:] if hasattr(agent, 'loss_history') else []
                 }
                 torch.save(checkpoint, checkpoint_path)
@@ -936,21 +1212,47 @@ def main():
                 logging.info(f"   💾 主网络: {main_net_path}")
                 logging.info(f"   🎯 目标网络: {target_net_path}")
                 logging.info(f"   📋 完整检查点: {checkpoint_path}")
+                
+                # 保存时的GPU状态
+                if torch.cuda.is_available():
+                    gpu_info = monitor_gpu_status()
+                    logging.info(f"   🖥️  GPU: {gpu_info.get('memory_allocated', 0):.0f}MB已用 | {gpu_info.get('memory_usage_percent', 0):.1f}%利用率")
         
             # 阶段转换提示 (只在决策帧检查)
             if agent.decision_step == OBSERVE:
                 logging.info(f"🎆 观察期结束! 开始 Dueling DQN 训练...")
+                # 训练开始时的GPU检查
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    gpu_info = monitor_gpu_status()
+                    logging.info(f"   🖥️  训练初始GPU状态: {gpu_info.get('memory_allocated', 0):.0f}MB已用")
             elif agent.decision_step == OBSERVE + EXPLORE:
                 logging.info(f"🏆 进入利用期! 主要使用已学策略...")
+                # 进入利用期时的GPU检查
+                if torch.cuda.is_available():
+                    gpu_info = monitor_gpu_status()
+                    logging.info(f"   🖥️  利用期GPU状态: {gpu_info.get('memory_allocated', 0):.0f}MB已用 | {gpu_info.get('memory_usage_percent', 0):.1f}%利用率")
             
-            # 进度提示
+            # 进度提示和GPU监控
             if agent.decision_step % 5000 == 0 and agent.decision_step > 0:
+                # 进度信息
                 if agent.decision_step < OBSERVE:
                     remaining = OBSERVE - agent.decision_step
                     logging.info(f"🔍 观察期: 还需{remaining}步开始训练")
                 elif agent.decision_step < OBSERVE + EXPLORE:
                     remaining = OBSERVE + EXPLORE - agent.decision_step
                     logging.info(f"🔍 探索期: 还需{remaining}步进入利用期")
+                
+                # 定期GPU状态检查
+                if torch.cuda.is_available():
+                    gpu_info = monitor_gpu_status()
+                    logging.info(f"🖥️  GPU状态: 使用{gpu_info.get('memory_usage_percent', 0):.1f}% | 温度{gpu_info.get('temperature', 'N/A')}°C")
+                    
+                    # GPU健康检查
+                    if gpu_info.get('memory_usage_percent', 0) > 85:
+                        logging.warning(f"⚠️  GPU内存使用率过高: {gpu_info['memory_usage_percent']:.1f}%")
+                    if gpu_info.get('temperature') and gpu_info['temperature'] > 80:
+                        logging.warning(f"⚠️  GPU温度过高: {gpu_info['temperature']}°C")
 
 
 if __name__ == "__main__":

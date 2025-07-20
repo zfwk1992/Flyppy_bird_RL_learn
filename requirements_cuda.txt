@@ -9,4 +9,6 @@ torch
 opencv-python
 numpy
 pygame
+psutil  # 内存监控
+# matplotlib  # 移除画图依赖，使用GPU监控代替可视化
 

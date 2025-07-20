@@ -40,6 +40,7 @@ class GameState:
     def __init__(self):
         self.score = self.playerIndex = self.loopIter = 0
         self.survival_frames = 0  # 🎯 添加存活时间计数器
+        self.previous_potential = 0  # 🧠 用于潜能函数奖励计算
         self.playerx = int(SCREENWIDTH * 0.2)
         # 🎯 提高初始高度
         self.playery = int((SCREENHEIGHT - PLAYER_HEIGHT) / 2) - 20
@@ -72,10 +73,21 @@ class GameState:
         # 🎯 增加存活时间计数器
         self.survival_frames += 1
         
-        # 🎯 递增存活奖励机制：每2帧后奖励增加0.002（修正版）
-        base_survival_reward = 0.01
-        bonus_reward = (self.survival_frames // 2) * 0.002
-        reward = base_survival_reward + bonus_reward
+        # 🎯 科学的奖励机制设计
+        # 1. 衰减式生存奖励：避免长时间累积过多奖励
+        gamma_survival = 0.999  # 衰减因子
+        base_survival = 1e-4   # 极小的基础生存奖励
+        survival_reward = base_survival * (gamma_survival ** self.survival_frames)
+        
+        # 2. 潜能函数奖励塑形：鼓励靠近管道中心
+        potential_reward = self._calculate_potential_reward()
+        
+        # 3. 总奖励 = 衰减生存奖励 + 潜能函数奖励
+        reward = survival_reward + potential_reward
+        
+        # 🔍 调试信息（每1000帧输出一次，避免刷屏）
+        if self.survival_frames % 1000 == 0 and self.survival_frames > 0:
+            print(f"🔍 奖励调试 [{self.survival_frames}帧]: 生存={survival_reward:.6f}, 潜能={potential_reward:.6f}, 总计={reward:.6f}")
         
         terminal = False
 
@@ -97,7 +109,8 @@ class GameState:
             if pipeMidPos <= playerMidPos < pipeMidPos + 4:
                 self.score += 1
                 #SOUNDS['point'].play()
-                reward = 5
+                # 🏆 大幅增强管道奖励：确保远超任何生存奖励总和
+                reward = 20  # 从5提升到20，确保管道奖励占绝对主导
 
         # playerIndex basex change
         if (self.loopIter + 1) % 3 == 0:
@@ -139,7 +152,8 @@ class GameState:
             #SOUNDS['die'].play()
             terminal = True
             self.__init__()
-            reward = -1
+            # 💀 增强死亡惩罚：提高撞击成本
+            reward = -2  # 从-1提升到-2，增加风险成本
 
         # draw sprites
         SCREEN.blit(IMAGES['background'], (0,0))
@@ -159,6 +173,44 @@ class GameState:
         FPSCLOCK.tick(FPS)
         #print self.upperPipes[0]['y'] + PIPE_HEIGHT - int(BASEY * 0.2)
         return image_data, reward, terminal
+    
+    def _calculate_potential_reward(self):
+        """
+        🧠 潜能函数奖励塑形：鼓励靠近管道中心
+        使用经典的 Potential-based Reward Shaping 方法
+        """
+        if not self.upperPipes:
+            return 0
+        
+        # 找到最近的管道
+        closest_pipe = None
+        min_distance = float('inf')
+        
+        for pipe in self.upperPipes:
+            pipe_x = pipe['x'] + PIPE_WIDTH / 2
+            if pipe_x > self.playerx:  # 只考虑前方管道
+                distance = pipe_x - self.playerx
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_pipe = pipe
+        
+        if closest_pipe is None:
+            current_potential = 0
+        else:
+            # 计算管道中心位置
+            gap_center_y = (closest_pipe['y'] + PIPE_HEIGHT + PIPEGAPSIZE / 2)
+            
+            # 潜能函数：负的距离（越近中心越大）
+            distance_to_center = abs(self.playery + PLAYER_HEIGHT/2 - gap_center_y)
+            current_potential = -distance_to_center / 100.0  # 缩放因子
+        
+        # 计算潜能差分：γ * Φ(s') - Φ(s)
+        gamma = 0.99
+        potential_reward = gamma * current_potential - self.previous_potential
+        self.previous_potential = current_potential
+        
+        # 限制潜能奖励的范围，避免过大影响
+        return max(-0.01, min(0.01, potential_reward))
 
 def getRandomPipe():
     """returns a randomly generated pipe"""
