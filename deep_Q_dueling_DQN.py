@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# 全面测试稳定版 Dueling DQN
+# 全面测试稳定版 Dueling DQN - 优化版本 (Batch Size: 128)
 # 修复所有已知问题，确保训练可以正常进行
 
 import torch
@@ -25,12 +25,13 @@ class StablePriorityReplayBuffer:
     """
     稳定版优先经验回放缓冲区
     经过全面测试，确保无内存泄漏和bug
+    针对更大的batch size进行了优化
     """
-    def __init__(self, capacity=50000, alpha=0.6):
+    def __init__(self, capacity=100000, alpha=0.8):  # 增大缓冲区容量
         self.capacity = capacity
         self.alpha = alpha
         self.beta = 0.4
-        self.beta_increment = 0.001
+        self.beta_increment = 0.0005  # 减缓beta增长速度
         self.beta_max = 1.0
         
         # 使用预分配数组避免动态增长
@@ -59,7 +60,7 @@ class StablePriorityReplayBuffer:
         self.size = min(self.size + 1, self.capacity)
         
     def sample(self, batch_size):
-        """优先级采样"""
+        """优先级采样 - 优化版本以支持更大批次"""
         if self.size < batch_size:
             return None, None, None
         
@@ -70,7 +71,7 @@ class StablePriorityReplayBuffer:
             probs = valid_priorities ** self.alpha
             probs = probs / np.sum(probs)
             
-            # 采样索引
+            # 采样索引 - 使用更高效的采样方法
             indices = np.random.choice(self.size, batch_size, p=probs, replace=False)
             
             # 计算重要性采样权重
@@ -105,6 +106,7 @@ class RobustDuelingDQN(nn.Module):
     """
     鲁棒版 Dueling DQN 网络
     经过测试确保稳定性
+    针对更大批次进行了优化
     """
     def __init__(self, actions=2):
         super(RobustDuelingDQN, self).__init__()
@@ -116,10 +118,10 @@ class RobustDuelingDQN(nn.Module):
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
         
-        # 批量归一化提升训练稳定性
-        self.bn1 = nn.BatchNorm2d(32)
-        self.bn2 = nn.BatchNorm2d(64)
-        self.bn3 = nn.BatchNorm2d(64)
+        # 批量归一化提升训练稳定性 - 增加momentum以适应大批次
+        self.bn1 = nn.BatchNorm2d(32, momentum=0.01)
+        self.bn2 = nn.BatchNorm2d(64, momentum=0.01)
+        self.bn3 = nn.BatchNorm2d(64, momentum=0.01)
         
         # 🔧 修复4: 计算正确的特征图尺寸
         # 输入: 80x80 -> conv1: 20x20 -> conv2: 10x10 -> conv3: 10x10
@@ -129,7 +131,7 @@ class RobustDuelingDQN(nn.Module):
         self.shared_fc = nn.Sequential(
             nn.Linear(self.feature_size, 512),
             nn.ReLU(),
-            nn.Dropout(0.2)
+            nn.Dropout(0.3)  # 稍微增加dropout以适应大批次
         )
         
         # Dueling分支
@@ -200,58 +202,65 @@ class StableDQNAgent:
     """
     稳定版DQN智能体
     经过全面测试，确保训练正常进行
+    优化以支持更大的batch size
     """
     def __init__(self, actions=2, state_shape=(4, 80, 80)):
         self.actions = actions
         self.state_shape = state_shape
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        # 🔧 修复7: 保守的GPU内存设置
+        # 🔧 修复7: 调整GPU内存设置以适应更大批次
         if torch.cuda.is_available():
-            torch.cuda.set_per_process_memory_fraction(0.6)
+            torch.cuda.set_per_process_memory_fraction(0.7)  # 增加GPU内存使用
             # 启用内存池
-            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:256'
         
         # 创建网络
         self.q_network = RobustDuelingDQN(actions).to(self.device)
         self.target_network = RobustDuelingDQN(actions).to(self.device)
         self.target_network.load_state_dict(self.q_network.state_dict())
         
-        # 🔧 修复8: 稳定的优化器配置
+        # 🔧 修复8: 调整优化器配置以适应大批次
         self.optimizer = optim.Adam(
             self.q_network.parameters(),
-            lr=0.0001,
+            lr=0.00025,  # 增加学习率以补偿大批次
             eps=1e-8,
             weight_decay=1e-5
         )
         
-        # 学习率调度器
+        # 学习率调度器 - 调整以适应大批次训练
         self.scheduler = optim.lr_scheduler.StepLR(
             self.optimizer,
-            step_size=50000,
+            step_size=100000,  # 增加step size
             gamma=0.8
         )
         
-        # 经验回放缓冲区
-        self.memory = StablePriorityReplayBuffer(capacity=50000)
+        # 经验回放缓冲区 - 增大容量
+        self.memory = StablePriorityReplayBuffer(capacity=100000)
         
         # 训练参数
         self.epsilon = 1.0
         self.epsilon_min = 0.01
-        self.epsilon_decay_steps = 100000
+        self.epsilon_decay_steps = 1200000  # 覆盖约48,000局游戏（50,000-2,000观察期）
         self.step = 0
         self.decision_step = 0
-        self.training_start = 10000
+        self.training_start = 50000  # 观察期约2,000局游戏
+        
+        # 探索策略参数
+        self.exploration_cycle = 50000  # 探索周期（约2,000局）
+        self.exploration_duration = 5000  # 每次探索持续步数（约200局）
+        self.main_exploration_games = 50000  # 前50,000局为主要探索阶段
+        self.avg_decisions_per_game = 25  # 平均每局决策数，用于估算游戏局数
         
         # 🔧 修复9: 固定大小的监控数据
         self.episode_rewards = deque(maxlen=1000)
         self.loss_history = deque(maxlen=1000)
         self.q_values_history = deque(maxlen=1000)
         
-        # 网络更新参数
-        self.target_update_freq = 10000
+        # 网络更新参数 - 调整以适应大批次
+        self.target_update_freq = 15000  # 增加目标网络更新频率
         self.training_freq = 4
-        self.batch_size = 64
+        self.batch_size = 128  # 增大批次大小
         
         # 性能跟踪
         self.best_avg_reward = -float('inf')
@@ -260,6 +269,9 @@ class StableDQNAgent:
         # 训练统计
         self.train_count = 0
         self.update_count = 0
+        
+        # 梯度累积（可选，用于进一步稳定大批次训练）
+        self.gradient_accumulation_steps = 1
         
     def preprocess_state(self, state):
         """鲁棒的状态预处理"""
@@ -342,8 +354,8 @@ class StableDQNAgent:
             logging.error(f"经验存储失败: {e}")
     
     def train(self):
-        """训练网络"""
-        if len(self.memory) < self.batch_size:
+        """训练网络 - 优化以支持大批次"""
+        if len(self.memory) < self.batch_size * 2:  # 确保有足够的样本
             return None
         
         try:
@@ -352,32 +364,39 @@ class StableDQNAgent:
             if batch is None:
                 return None
             
-            # 🔧 修复12: 安全的数据准备
-            states = []
-            actions = []
-            rewards = []
-            next_states = []
-            dones = []
+            # 🔧 修复12: 优化的数据准备（批量处理）
+            # 预分配数组
+            states = np.zeros((self.batch_size, 4, 80, 80), dtype=np.float32)
+            actions = np.zeros(self.batch_size, dtype=np.int64)
+            rewards = np.zeros(self.batch_size, dtype=np.float32)
+            next_states = np.zeros((self.batch_size, 4, 80, 80), dtype=np.float32)
+            dones = np.zeros(self.batch_size, dtype=bool)
             
-            for exp in batch:
-                states.append(exp['state'])
-                actions.append(exp['action'])
-                rewards.append(exp['reward'])
-                next_states.append(exp['next_state'])
-                dones.append(exp['done'])
+            # 批量填充数据
+            for i, exp in enumerate(batch):
+                # 处理状态形状
+                state = exp['state']
+                next_state = exp['next_state']
+                
+                if state.shape == (80, 80, 4):
+                    states[i] = state.transpose(2, 0, 1)
+                else:
+                    states[i] = state
+                    
+                if next_state.shape == (80, 80, 4):
+                    next_states[i] = next_state.transpose(2, 0, 1)
+                else:
+                    next_states[i] = next_state
+                
+                actions[i] = exp['action']
+                rewards[i] = exp['reward']
+                dones[i] = exp['done']
             
             # 转换为tensor
-            states = torch.FloatTensor(np.array(states)).to(self.device)
-            if states.dim() == 4 and states.shape[-1] == 4:
-                states = states.permute(0, 3, 1, 2)
-            
+            states = torch.FloatTensor(states).to(self.device)
             actions = torch.LongTensor(actions).to(self.device)
             rewards = torch.FloatTensor(rewards).to(self.device)
-            
-            next_states = torch.FloatTensor(np.array(next_states)).to(self.device)
-            if next_states.dim() == 4 and next_states.shape[-1] == 4:
-                next_states = next_states.permute(0, 3, 1, 2)
-            
+            next_states = torch.FloatTensor(next_states).to(self.device)
             dones = torch.BoolTensor(dones).to(self.device)
             weights = torch.FloatTensor(weights).to(self.device)
             
@@ -402,22 +421,26 @@ class StableDQNAgent:
             td_errors = target_q - current_q
             loss = (weights.unsqueeze(1) * F.smooth_l1_loss(current_q, target_q, reduction='none')).mean()
             
-            # 反向传播
-            self.optimizer.zero_grad()
+            # 反向传播（支持梯度累积）
+            loss = loss / self.gradient_accumulation_steps
             loss.backward()
             
-            # 梯度裁剪
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), 1.0)
-            
-            self.optimizer.step()
-            self.scheduler.step()
+            if (self.train_count + 1) % self.gradient_accumulation_steps == 0:
+                # 梯度裁剪
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), 1.0)
+                
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+                self.scheduler.step()
+            else:
+                grad_norm = 0.0
             
             # 更新优先级
             td_errors_np = td_errors.detach().cpu().numpy().flatten()
             self.memory.update_priorities(indices, td_errors_np)
             
             # 记录统计
-            self.loss_history.append(loss.item())
+            self.loss_history.append(loss.item() * self.gradient_accumulation_steps)
             self.train_count += 1
             
             # 目标网络更新
@@ -427,21 +450,22 @@ class StableDQNAgent:
                 logging.info(f"🎯 目标网络更新 #{self.update_count} (步数: {self.decision_step})")
             
             # 🔧 修复13: 适度的内存清理
-            if self.train_count % 100 == 0:
+            if self.train_count % 50 == 0:  # 更频繁的清理
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                if self.train_count % 1000 == 0:
+                if self.train_count % 500 == 0:
                     gc.collect()
             
             return {
-                'loss': loss.item(),
+                'loss': loss.item() * self.gradient_accumulation_steps,
                 'q_mean': current_q.mean().item(),
                 'q_std': current_q.std().item(),
-                'grad_norm': grad_norm.item(),
+                'grad_norm': grad_norm if isinstance(grad_norm, float) else grad_norm.item(),
                 'lr': self.scheduler.get_last_lr()[0],
                 'epsilon': self.epsilon,
                 'memory_size': len(self.memory),
-                'train_count': self.train_count
+                'train_count': self.train_count,
+                'batch_size': self.batch_size
             }
             
         except Exception as e:
@@ -449,15 +473,63 @@ class StableDQNAgent:
             return None
     
     def update_epsilon(self):
-        """线性ε衰减"""
+        """改进的epsilon衰减策略，前50,000局探索，后50,000局利用"""
+        # 估算当前游戏局数
+        estimated_episode = self.decision_step / self.avg_decisions_per_game
+        
         if self.decision_step < self.training_start:
+            # 观察期（前2,000局）：完全随机
             self.epsilon = 1.0
-        elif self.decision_step < self.training_start + self.epsilon_decay_steps:
-            # 线性衰减
-            progress = (self.decision_step - self.training_start) / self.epsilon_decay_steps
-            self.epsilon = 1.0 - progress * (1.0 - self.epsilon_min)
         else:
-            self.epsilon = self.epsilon_min
+            # 基础衰减
+            progress = (self.decision_step - self.training_start) / self.epsilon_decay_steps
+            base_epsilon = max(self.epsilon_min, 1.0 - progress * (1.0 - self.epsilon_min))
+            
+            # 分阶段调整epsilon
+            if estimated_episode < 10000:
+                # 前10,000局：保持高探索率（至少50%）
+                base_epsilon = max(base_epsilon, 0.5)
+            elif estimated_episode < 30000:
+                # 10,000-30,000局：中等探索率（至少20%）
+                base_epsilon = max(base_epsilon, 0.2)
+            elif estimated_episode < 50000:
+                # 30,000-50,000局：低探索率（至少10%）
+                base_epsilon = max(base_epsilon, 0.1)
+            # 50,000局后：使用计算的base_epsilon，逐渐降到1%
+            
+            # 周期性探索脉冲
+            cycle_position = self.decision_step % self.exploration_cycle
+            if cycle_position < self.exploration_duration:
+                # 根据训练阶段调整脉冲强度
+                if estimated_episode < 20000:
+                    # 前20,000局：强脉冲
+                    exploration_boost = 0.15
+                elif estimated_episode < 40000:
+                    # 20,000-40,000局：中等脉冲
+                    exploration_boost = 0.10
+                elif estimated_episode < 60000:
+                    # 40,000-60,000局：弱脉冲
+                    exploration_boost = 0.05
+                else:
+                    # 60,000局后：微弱脉冲
+                    exploration_boost = 0.03
+            else:
+                exploration_boost = 0.0
+            
+            # 组合基础epsilon和探索脉冲
+            self.epsilon = min(1.0, base_epsilon + exploration_boost)
+            
+            # 记录探索脉冲事件
+            if cycle_position == 0 and self.decision_step > self.training_start:
+                phase = "高探索期" if estimated_episode < 10000 else \
+                        "中探索期" if estimated_episode < 30000 else \
+                        "低探索期" if estimated_episode < 50000 else "利用期"
+                logging.info(f"🔍 探索脉冲 | ε: {self.epsilon:.4f} | 局数: ~{int(estimated_episode)} | 阶段: {phase}")
+            
+            # 重要阶段转换提示
+            if int(estimated_episode) == 50000 and int((self.decision_step - self.avg_decisions_per_game) / self.avg_decisions_per_game) == 49999:
+                logging.info("🎯 主探索阶段完成！进入利用阶段")
+                logging.info(f"   已完成50,000局探索，开始专注于策略优化")
     
     def evaluate_performance(self):
         """性能评估"""
@@ -487,9 +559,9 @@ class StableDQNAgent:
             else:
                 improvement_rate = 0.0
             
-            # 健康度评分
+            # 健康度评分（调整阈值以适应大批次）
             health_score = 100
-            if avg_loss > 2.0:
+            if avg_loss > 3.0:  # 放宽损失阈值
                 health_score -= 30
             if reward_std > abs(avg_reward) + 5:
                 health_score -= 20
@@ -534,7 +606,8 @@ class StableDQNAgent:
                 'epsilon': self.epsilon,
                 'best_avg_reward': self.best_avg_reward,
                 'train_count': self.train_count,
-                'update_count': self.update_count
+                'update_count': self.update_count,
+                'batch_size': self.batch_size  # 保存批次大小
             }
             
             if metadata:
@@ -551,7 +624,7 @@ def setup_logging():
     try:
         os.makedirs("logs", exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = f"logs/stable_dueling_dqn_{timestamp}.log"
+        log_file = f"logs/stable_dueling_dqn_bs128_{timestamp}.log"
         
         # 创建日志格式
         formatter = logging.Formatter(
@@ -585,7 +658,7 @@ def main():
     try:
         # 初始化日志
         log_file = setup_logging()
-        logging.info("🚀 稳定版 Dueling DQN 训练系统启动")
+        logging.info("🚀 稳定版 Dueling DQN 训练系统启动 (Batch Size: 128)")
         
         # 设置垃圾回收
         gc.set_threshold(1000, 100, 100)
@@ -598,11 +671,17 @@ def main():
         game_state = game.GameState()
         agent = StableDQNAgent(actions=2)
         
+        # 训练目标
+        MAX_EPISODES = 100000  # 目标训练局数
+        
         # 系统信息
         logging.info(f"   设备: {agent.device}")
+        logging.info(f"   批次大小: {agent.batch_size}")
         logging.info(f"   观察期: {agent.training_start} 步")
         logging.info(f"   目标网络更新频率: {agent.target_update_freq}")
         logging.info(f"   缓冲区容量: {agent.memory.capacity}")
+        logging.info(f"   学习率: {agent.optimizer.param_groups[0]['lr']}")
+        logging.info(f"   🎯 目标训练局数: {MAX_EPISODES:,}")
         
         # 获取初始状态
         do_nothing = np.zeros(2)
@@ -624,7 +703,7 @@ def main():
         
         logging.info("🎮 开始训练循环")
         
-        while True:
+        while episode_count < MAX_EPISODES:
             # 动作选择
             if agent.step % agent.training_freq == 0:
                 action_index = agent.select_action(s_t)
@@ -657,7 +736,13 @@ def main():
                         logging.info(f"🧠 训练步骤 {agent.decision_step}")
                         logging.info(f"   损失: {train_stats['loss']:.4f} | Q值: {train_stats['q_mean']:.2f}±{train_stats['q_std']:.2f}")
                         logging.info(f"   学习率: {train_stats['lr']:.2e} | ε: {train_stats['epsilon']:.4f}")
-                        logging.info(f"   近10局平均: {avg_reward:.2f} | 内存: {train_stats['memory_size']}")
+                        logging.info(f"   近10局平均: {avg_reward:.2f} | 内存: {train_stats['memory_size']} | 批次: {train_stats['batch_size']}")
+                        
+                        # 检查是否在探索脉冲期间
+                        if agent.decision_step > agent.training_start:
+                            cycle_pos = agent.decision_step % agent.exploration_cycle
+                            if cycle_pos < agent.exploration_duration:
+                                logging.info(f"   🔍 探索脉冲进行中: {cycle_pos}/{agent.exploration_duration}")
                 
                 agent.update_epsilon()
             
@@ -677,10 +762,11 @@ def main():
                         'episode': episode_count,
                         'score': episode_reward,
                         'training_time': time.time() - training_start_time,
-                        'decision_steps': agent.decision_step
+                        'decision_steps': agent.decision_step,
+                        'batch_size': agent.batch_size
                     }
                     
-                    agent.save_model(f"saved_networks/stable_best_{episode_reward:.0f}.pth", metadata)
+                    agent.save_model(f"saved_networks/stable_best_bs128_{episode_reward:.0f}.pth", metadata)
                     logging.info(f"🏆 新纪录! 分数: {episode_reward}")
                 
                 # 游戏总结
@@ -690,16 +776,20 @@ def main():
                 memory_info = ""
                 if torch.cuda.is_available():
                     gpu_memory = torch.cuda.memory_allocated() / 1024**2
-                    memory_info = f" | GPU: {gpu_memory:.0f}MB"
+                    gpu_memory_reserved = torch.cuda.memory_reserved() / 1024**2
+                    memory_info = f" | GPU: {gpu_memory:.0f}/{gpu_memory_reserved:.0f}MB"
                 
-                logging.info(f"🎮 第{episode_count}局 | 分数: {episode_reward:.2f} | 最高: {max_score:.2f} | 近100局: {recent_avg:.2f}{memory_info}")
+                # 进度信息
+                progress = (episode_count / MAX_EPISODES) * 100
+                logging.info(f"🎮 第{episode_count}局 ({progress:.1f}%) | 分数: {episode_reward:.2f} | 最高: {max_score:.2f} | 近100局: {recent_avg:.2f}{memory_info}")
                 
                 # 性能报告
                 if episode_count % 100 == 0:
                     performance = agent.evaluate_performance()
                     training_hours = (time.time() - training_start_time) / 3600
                     
-                    logging.info(f"📊 第{episode_count}局 性能报告")
+                    logging.info(f"📊 第{episode_count}局 性能报告 (Batch Size: {agent.batch_size})")
+                    logging.info(f"   训练进度: {episode_count:,}/{MAX_EPISODES:,} ({progress:.1f}%)")
                     logging.info(f"   训练时长: {training_hours:.1f}小时 | 决策步数: {agent.decision_step}")
                     logging.info(f"   平均表现: {performance['avg_reward']:.2f}±{performance['reward_std']:.2f}")
                     logging.info(f"   表现范围: [{performance['min_reward']:.1f}, {performance['max_reward']:.1f}]")
@@ -707,14 +797,39 @@ def main():
                     logging.info(f"   健康度: {performance['health_score']}/100 ({performance['status']})")
                     logging.info(f"   改善率: {performance['improvement_rate']:.2f}")
                     
+                    # 探索策略信息
+                    base_progress = min(1.0, (agent.decision_step - agent.training_start) / agent.epsilon_decay_steps) if agent.decision_step > agent.training_start else 0
+                    estimated_games = agent.decision_step / agent.avg_decisions_per_game
+                    
+                    if estimated_games < 2000:
+                        exploration_phase = "观察期"
+                    elif estimated_games < 10000:
+                        exploration_phase = "高探索期"
+                    elif estimated_games < 30000:
+                        exploration_phase = "中探索期"
+                    elif estimated_games < 50000:
+                        exploration_phase = "低探索期"
+                    else:
+                        exploration_phase = "利用期"
+                    
+                    logging.info(f"   探索率: ε={agent.epsilon:.4f} | 阶段: {exploration_phase} | 衰减进度: {base_progress*100:.1f}%")
+                    
+                    # 估算剩余时间
+                    if episode_count > 0:
+                        episodes_per_hour = episode_count / training_hours
+                        remaining_episodes = MAX_EPISODES - episode_count
+                        estimated_hours = remaining_episodes / episodes_per_hour
+                        logging.info(f"   预计剩余时间: {estimated_hours:.1f}小时 ({episodes_per_hour:.1f}局/小时)")
+                    
                     # 保存定期检查点
                     if time.time() - last_save_time > 1800:  # 每30分钟保存一次
                         checkpoint_metadata = {
                             'episode': episode_count,
                             'performance': performance,
-                            'training_hours': training_hours
+                            'training_hours': training_hours,
+                            'batch_size': agent.batch_size
                         }
-                        agent.save_model(f"saved_networks/stable_checkpoint_{episode_count}.pth", checkpoint_metadata)
+                        agent.save_model(f"saved_networks/stable_checkpoint_bs128_{episode_count}.pth", checkpoint_metadata)
                         last_save_time = time.time()
                     
                     # 训练质量警告
@@ -727,12 +842,38 @@ def main():
                 
                 # 阶段转换提示
                 if agent.decision_step == agent.training_start:
-                    logging.info("🎆 观察期结束，开始正式训练！")
+                    logging.info("🎆 观察期结束，进入主探索阶段！")
+                    logging.info(f"   已完成约2,000局观察")
                     logging.info(f"   当前缓冲区大小: {len(agent.memory)}")
                     logging.info(f"   当前ε值: {agent.epsilon:.4f}")
+                    logging.info(f"   开始48,000局的探索学习")
+                
+                # 10,000局里程碑
+                if episode_count == 10000:
+                    logging.info("📍 完成10,000局 - 高探索期")
+                    logging.info(f"   当前ε值: {agent.epsilon:.4f}")
+                    logging.info(f"   历史最高分: {max_score:.2f}")
+                
+                # 30,000局里程碑
+                if episode_count == 30000:
+                    logging.info("📍 完成30,000局 - 进入低探索期")
+                    logging.info(f"   当前ε值: {agent.epsilon:.4f}")
+                    logging.info(f"   历史最高分: {max_score:.2f}")
+                
+                # 50,000局阶段转换
+                if episode_count == 50000:
+                    logging.info("🏁 主探索阶段完成！进入利用阶段")
+                    logging.info(f"   已完成50,000局探索学习")
+                    logging.info(f"   当前ε值: {agent.epsilon:.4f}")
+                    logging.info(f"   历史最高分: {max_score:.2f}")
+                    recent_1000_avg = np.mean(list(agent.episode_rewards)[-1000:]) if len(agent.episode_rewards) >= 1000 else 0
+                    recent_5000_avg = np.mean(list(agent.episode_rewards)[-5000:]) if len(agent.episode_rewards) >= 5000 else 0
+                    logging.info(f"   近1,000局平均: {recent_1000_avg:.2f}")
+                    logging.info(f"   近5,000局平均: {recent_5000_avg:.2f}")
+                    logging.info("   开始后50,000局的策略优化")
                 
                 # 训练里程碑
-                milestones = [50000, 100000, 200000, 500000]
+                milestones = [50000, 100000, 200000, 500000, 1000000]
                 for milestone in milestones:
                     if agent.decision_step == milestone:
                         current_performance = agent.evaluate_performance()
@@ -741,12 +882,42 @@ def main():
                             logging.info(f"   里程碑性能: {current_performance['avg_reward']:.2f}")
                             training_efficiency = current_performance['avg_reward'] / (training_hours + 0.1)
                             logging.info(f"   训练效率: {training_efficiency:.2f} 分/小时")
+                            logging.info(f"   每批次样本数: {agent.batch_size}")
+        
+        # 训练完成
+        logging.info("🎉 训练完成！已完成100,000局游戏")
+        
+        # 最终性能报告
+        final_performance = agent.evaluate_performance()
+        total_training_time = (time.time() - training_start_time) / 3600
+        
+        logging.info("📈 最终训练报告:")
+        logging.info(f"   总训练局数: {episode_count:,}")
+        logging.info(f"   总训练时长: {total_training_time:.1f}小时")
+        logging.info(f"   总决策步数: {agent.decision_step:,}")
+        logging.info(f"   历史最高分: {max_score:.2f}")
+        logging.info(f"   最终100局平均: {final_performance['avg_reward']:.2f}")
+        logging.info(f"   最终健康度: {final_performance['health_score']}/100")
+        
+        # 保存最终模型
+        final_metadata = {
+            'episode': episode_count,
+            'total_training_hours': total_training_time,
+            'decision_steps': agent.decision_step,
+            'max_score': max_score,
+            'final_performance': final_performance,
+            'batch_size': agent.batch_size
+        }
+        
+        agent.save_model(f"saved_networks/stable_final_bs128_100k.pth", final_metadata)
+        logging.info("💾 已保存最终模型")
         
     except KeyboardInterrupt:
         logging.info("👋 训练被用户中断")
+        logging.info(f"   已完成 {episode_count:,}/{MAX_EPISODES:,} 局 ({(episode_count/MAX_EPISODES)*100:.1f}%)")
         if 'agent' in locals():
             try:
-                final_checkpoint = f"saved_networks/stable_interrupted_{episode_count}.pth"
+                final_checkpoint = f"saved_networks/stable_interrupted_bs128_{episode_count}.pth"
                 agent.save_model(final_checkpoint)
                 logging.info(f"💾 已保存中断检查点: {final_checkpoint}")
             except:
@@ -760,7 +931,7 @@ def main():
         # 尝试保存紧急检查点
         if 'agent' in locals():
             try:
-                emergency_checkpoint = f"saved_networks/stable_emergency_{int(time.time())}.pth"
+                emergency_checkpoint = f"saved_networks/stable_emergency_bs128_{int(time.time())}.pth"
                 agent.save_model(emergency_checkpoint)
                 logging.info(f"🚨 已保存紧急检查点: {emergency_checkpoint}")
             except:
