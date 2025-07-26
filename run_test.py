@@ -1,68 +1,79 @@
 #!/usr/bin/env python3
 """
-运行AI游戏测试的启动脚本
-确保从正确的目录运行测试
+Flappy Bird Dueling DQN 推理测试启动器
+自动查找最新模型并调用 test/test_ai_gameplay.py 进行推理评测
 """
-
 import os
 import sys
 import subprocess
+import argparse
+
+def find_latest_model(saved_networks_dir):
+    """查找saved_networks目录下最新的.pth模型文件"""
+    if not os.path.exists(saved_networks_dir):
+        return None
+    model_files = [f for f in os.listdir(saved_networks_dir) if f.endswith('.pth')]
+    if not model_files:
+        return None
+    model_files.sort(key=lambda x: os.path.getmtime(os.path.join(saved_networks_dir, x)), reverse=True)
+    return os.path.join(saved_networks_dir, model_files[0])
 
 def main():
-    """主函数"""
-    print("🎮 Flappy Bird AI 测试启动器")
+    print("🎮 Flappy Bird Dueling DQN 推理测试启动器")
     print("=" * 50)
-    
-    # 确保在项目根目录
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
-    
     print(f"📂 当前工作目录: {os.getcwd()}")
-    
-    # 检查必要的文件是否存在
+
+    # 检查必要文件
     required_files = [
-        "game/wrapped_flappy_bird_fast.py",
         "test/test_ai_gameplay.py",
         "saved_networks"
     ]
-    
-    missing_files = []
-    for file_path in required_files:
-        if not os.path.exists(file_path):
-            missing_files.append(file_path)
-    
+    missing_files = [f for f in required_files if not os.path.exists(f)]
     if missing_files:
         print("❌ 缺少必要文件:")
         for file_path in missing_files:
             print(f"   - {file_path}")
         print("\n💡 请确保在正确的项目目录中运行此脚本")
         return 1
-    
-    # 检查是否有保存的模型
+
+    # 查找最新模型
     saved_networks_dir = "saved_networks"
-    if os.path.exists(saved_networks_dir):
-        model_files = [f for f in os.listdir(saved_networks_dir) if f.endswith('.pth')]
-        if model_files:
-            print(f"✅ 找到 {len(model_files)} 个模型文件")
-            # 显示最新的几个模型
-            model_files.sort(key=lambda x: os.path.getmtime(os.path.join(saved_networks_dir, x)), reverse=True)
-            print("   最新模型:")
-            for model in model_files[:3]:
-                print(f"   - {model}")
-        else:
-            print("⚠️  saved_networks目录存在但没有模型文件")
-            print("💡 请先运行训练: python deep_Q_oneStep.py")
-    
-    print("\n🚀 启动AI游戏测试...")
-    
-    # 运行测试脚本，指定加载bird-dqn-oneStep-300.pth模型
+    latest_model = find_latest_model(saved_networks_dir)
+    if not latest_model:
+        print("❌ 未找到任何.pth模型文件，请先训练模型！")
+        return 1
+    print(f"✅ 将加载最新模型: {latest_model}")
+
+    # 解析可选参数并传递给测试脚本
+    parser = argparse.ArgumentParser(description="Flappy Bird Dueling DQN 推理测试启动器")
+    parser.add_argument('--episodes', type=int, help='测试局数')
+    parser.add_argument('--fps', type=int, help='游戏帧率')
+    parser.add_argument('--delay', type=float, help='每帧延迟（秒）')
+    parser.add_argument('--no-q-values', action='store_true', help='不显示Q值')
+    args, unknown = parser.parse_known_args()
+
+    # 构建命令
+    cmd = [
+        sys.executable,
+        "test/test_ai_gameplay.py",
+        "--model", latest_model
+    ]
+    if args.episodes:
+        cmd += ["--episodes", str(args.episodes)]
+    if args.fps:
+        cmd += ["--fps", str(args.fps)]
+    if args.delay:
+        cmd += ["--delay", str(args.delay)]
+    if args.no_q_values:
+        cmd.append("--no-q-values")
+    # 传递未知参数（兼容性）
+    cmd += unknown
+
+    print("\n🚀 启动AI推理测试...")
     try:
-        result = subprocess.run([
-            sys.executable, 
-            "test/test_ai_gameplay.py",
-            "--model", "saved_networks/bird-dqn-oneStep-300.pth",
-            "--fps", "60"
-        ], cwd=script_dir)
+        result = subprocess.run(cmd, cwd=script_dir)
         return result.returncode
     except Exception as e:
         print(f"❌ 启动测试失败: {e}")

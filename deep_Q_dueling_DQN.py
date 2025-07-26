@@ -244,11 +244,11 @@ class StableDQNAgent:
         self.epsilon_decay_steps = 1200000  # 覆盖约48,000局游戏（50,000-2,000观察期）
         self.step = 0
         self.decision_step = 0
-        self.training_start = 50000  # 观察期约2,000局游戏
+        self.training_start = 20000  # 观察期约20000decision steps
         
         # 探索策略参数
         self.exploration_cycle = 50000  # 探索周期（约2,000局）
-        self.exploration_duration = 5000  # 每次探索持续步数（约200局）
+        self.exploration_duration = 40  # 每次探索持续步数（decision_step）
         self.main_exploration_games = 50000  # 前50,000局为主要探索阶段
         self.avg_decisions_per_game = 25  # 平均每局决策数，用于估算游戏局数
         
@@ -258,7 +258,7 @@ class StableDQNAgent:
         self.q_values_history = deque(maxlen=1000)
         
         # 网络更新参数 - 调整以适应大批次
-        self.target_update_freq = 15000  # 增加目标网络更新频率
+        self.target_update_freq = 125000  # 增加目标网络更新频率 （大概5000局游戏替换一次）
         self.training_freq = 4
         self.batch_size = 128  # 增大批次大小
         
@@ -447,7 +447,7 @@ class StableDQNAgent:
             if self.decision_step % self.target_update_freq == 0:
                 self.target_network.load_state_dict(self.q_network.state_dict())
                 self.update_count += 1
-                logging.info(f"🎯 目标网络更新 #{self.update_count} (步数: {self.decision_step})")
+                logging.info(f"🎯 目标网络更新 #{self.update_count} (decision_step: {self.decision_step})")
             
             # 🔧 修复13: 适度的内存清理
             if self.train_count % 50 == 0:  # 更频繁的清理
@@ -472,7 +472,7 @@ class StableDQNAgent:
             logging.error(f"训练失败: {e}")
             return None
     
-    def update_epsilon(self):
+    def update_epsilon(self, episode_count):
         """改进的epsilon衰减策略，前50,000局探索，后50,000局利用"""
         # 估算当前游戏局数
         estimated_episode = self.decision_step / self.avg_decisions_per_game
@@ -486,13 +486,13 @@ class StableDQNAgent:
             base_epsilon = max(self.epsilon_min, 1.0 - progress * (1.0 - self.epsilon_min))
             
             # 分阶段调整epsilon
-            if estimated_episode < 10000:
+            if episode_count < 10000:
                 # 前10,000局：保持高探索率（至少50%）
                 base_epsilon = max(base_epsilon, 0.5)
-            elif estimated_episode < 30000:
+            elif episode_count < 30000:
                 # 10,000-30,000局：中等探索率（至少20%）
                 base_epsilon = max(base_epsilon, 0.2)
-            elif estimated_episode < 50000:
+            elif episode_count < 50000:
                 # 30,000-50,000局：低探索率（至少10%）
                 base_epsilon = max(base_epsilon, 0.1)
             # 50,000局后：使用计算的base_epsilon，逐渐降到1%
@@ -501,13 +501,13 @@ class StableDQNAgent:
             cycle_position = self.decision_step % self.exploration_cycle
             if cycle_position < self.exploration_duration:
                 # 根据训练阶段调整脉冲强度
-                if estimated_episode < 20000:
+                if episode_count < 20000:
                     # 前20,000局：强脉冲
                     exploration_boost = 0.15
-                elif estimated_episode < 40000:
+                elif episode_count < 40000:
                     # 20,000-40,000局：中等脉冲
                     exploration_boost = 0.10
-                elif estimated_episode < 60000:
+                elif episode_count < 60000:
                     # 40,000-60,000局：弱脉冲
                     exploration_boost = 0.05
                 else:
@@ -521,13 +521,13 @@ class StableDQNAgent:
             
             # 记录探索脉冲事件
             if cycle_position == 0 and self.decision_step > self.training_start:
-                phase = "高探索期" if estimated_episode < 10000 else \
-                        "中探索期" if estimated_episode < 30000 else \
-                        "低探索期" if estimated_episode < 50000 else "利用期"
-                logging.info(f"🔍 探索脉冲 | ε: {self.epsilon:.4f} | 局数: ~{int(estimated_episode)} | 阶段: {phase}")
+                phase = "高探索期" if episode_count < 10000 else \
+                        "中探索期" if episode_count < 30000 else \
+                        "低探索期" if episode_count < 50000 else "利用期"
+                logging.info(f"🔍 探索脉冲 | ε: {self.epsilon:.4f} | 局数: ~{int(episode_count)} | 阶段: {phase}")
             
             # 重要阶段转换提示
-            if int(estimated_episode) == 50000 and int((self.decision_step - self.avg_decisions_per_game) / self.avg_decisions_per_game) == 49999:
+            if int(episode_count) == 50000 and int((self.decision_step - self.avg_decisions_per_game) / self.avg_decisions_per_game) == 49999:
                 logging.info("🎯 主探索阶段完成！进入利用阶段")
                 logging.info(f"   已完成50,000局探索，开始专注于策略优化")
     
@@ -618,6 +618,41 @@ class StableDQNAgent:
             
         except Exception as e:
             logging.error(f"模型保存失败: {e}")
+
+    def load_model(self, path):
+        """加载模型参数到q_network和target_network"""
+        import torch, os
+        if not os.path.exists(path):
+            print(f"❌ 模型文件不存在: {path}")
+            return False
+        checkpoint = torch.load(path, map_location=self.device)
+        # 1. 兼容直接保存整个Agent对象的情况
+        if isinstance(checkpoint, dict):
+            # 1.1 如果有q_network/target_network字段
+            if 'q_network' in checkpoint and 'target_network' in checkpoint:
+                self.q_network.load_state_dict(checkpoint['q_network'])
+                self.target_network.load_state_dict(checkpoint['target_network'])
+            # 1.2 其他常见格式
+            elif 'q_network_state_dict' in checkpoint:
+                self.q_network.load_state_dict(checkpoint['q_network_state_dict'])
+                self.target_network.load_state_dict(checkpoint['target_network_state_dict'])
+            elif 'model_state_dict' in checkpoint:
+                self.q_network.load_state_dict(checkpoint['model_state_dict'])
+                self.target_network.load_state_dict(checkpoint['model_state_dict'])
+            elif 'state_dict' in checkpoint:
+                self.q_network.load_state_dict(checkpoint['state_dict'])
+                self.target_network.load_state_dict(checkpoint['state_dict'])
+            else:
+                # 直接尝试用整个字典
+                self.q_network.load_state_dict(checkpoint)
+                self.target_network.load_state_dict(checkpoint)
+        else:
+            self.q_network.load_state_dict(checkpoint)
+            self.target_network.load_state_dict(checkpoint)
+        self.q_network.eval()
+        self.target_network.eval()
+        print(f"✅ 模型加载成功: {path}")
+        return True
 
 def setup_logging():
     """设置日志系统"""
@@ -724,16 +759,18 @@ def main():
             if agent.step % agent.training_freq == 0:
                 agent.decision_step += 1
                 agent.store_transition(s_t, action_index, r_t, s_t1, terminal)
-                
+                if agent.decision_step  == agent.training_start:
+                    logging.info(f"🧠 训练开始")
                 # 开始训练
                 if agent.decision_step > agent.training_start:
+                    
                     train_stats = agent.train()
                     
                     # 训练日志
                     if train_stats and agent.decision_step % 1000 == 0:
                         avg_reward = np.mean(list(agent.episode_rewards)[-10:]) if len(agent.episode_rewards) >= 10 else 0
                         
-                        logging.info(f"🧠 训练步骤 {agent.decision_step}")
+                        logging.info(f"🧠 训练decision_step步骤 {agent.decision_step}")
                         logging.info(f"   损失: {train_stats['loss']:.4f} | Q值: {train_stats['q_mean']:.2f}±{train_stats['q_std']:.2f}")
                         logging.info(f"   学习率: {train_stats['lr']:.2e} | ε: {train_stats['epsilon']:.4f}")
                         logging.info(f"   近10局平均: {avg_reward:.2f} | 内存: {train_stats['memory_size']} | 批次: {train_stats['batch_size']}")
@@ -744,7 +781,7 @@ def main():
                             if cycle_pos < agent.exploration_duration:
                                 logging.info(f"   🔍 探索脉冲进行中: {cycle_pos}/{agent.exploration_duration}")
                 
-                agent.update_epsilon()
+                agent.update_epsilon(episode_count)
             
             s_t = s_t1
             
@@ -752,10 +789,16 @@ def main():
             if terminal:
                 episode_count += 1
                 agent.episode_rewards.append(episode_reward)
-                
+                logging.info(f"🧠 游戏实际局数 {episode_count}")
+                logging.info(f"🧠 训练decision_step步骤 {agent.decision_step}")
+                if episode_count < 20000: 
+                    max_score = 99999
+                else:
+                    max_score = 0
                 # 保存最佳模型
                 if episode_reward > max_score:
                     max_score = episode_reward
+                    logging.info(f"🧠 在执行到 {episode_count} 局时，分数达到 {episode_reward}并保存最佳模型")
                     os.makedirs("saved_networks", exist_ok=True)
                     
                     metadata = {
@@ -799,15 +842,15 @@ def main():
                     
                     # 探索策略信息
                     base_progress = min(1.0, (agent.decision_step - agent.training_start) / agent.epsilon_decay_steps) if agent.decision_step > agent.training_start else 0
-                    estimated_games = agent.decision_step / agent.avg_decisions_per_game
+                    #estimated_games = agent.decision_step / agent.avg_decisions_per_game
                     
-                    if estimated_games < 2000:
+                    if episode_count < 2000:
                         exploration_phase = "观察期"
-                    elif estimated_games < 10000:
+                    elif episode_count < 10000:
                         exploration_phase = "高探索期"
-                    elif estimated_games < 30000:
+                    elif episode_count < 30000:
                         exploration_phase = "中探索期"
-                    elif estimated_games < 50000:
+                    elif episode_count < 50000:
                         exploration_phase = "低探索期"
                     else:
                         exploration_phase = "利用期"

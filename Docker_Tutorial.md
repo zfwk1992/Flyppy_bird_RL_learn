@@ -64,6 +64,8 @@ docker build -t flappy-bird-dqn .
 ```bash
 # 运行容器（一次性）
 docker-compose up flappy-bird-dqn
+
+sudo service docker start
 # 或
 docker run --gpus all flappy-bird-dqn
 ```
