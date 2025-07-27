@@ -181,13 +181,10 @@ class RobustDuelingDQN(nn.Module):
         
         # 🔧 修复6: 确保特征维度正确
         if x.size(1) != self.feature_size:
-            logging.warning(f"特征维度不匹配: 期望{self.feature_size}, 实际{x.size(1)}")
-            # 动态调整
-            if not hasattr(self, '_adaptive_fc'):
-                self._adaptive_fc = nn.Linear(x.size(1), 512).to(x.device)
-            shared_features = F.relu(self._adaptive_fc(x))
-        else:
-            shared_features = self.shared_fc(x)
+            logging.error(f"特征维度不匹配: 期望{self.feature_size}, 实际{x.size(1)}")
+            raise RuntimeError(f"网络输入维度错误: 期望{self.feature_size}, 实际{x.size(1)}. 请检查卷积层配置.")
+        
+        shared_features = self.shared_fc(x)
         
         # Dueling分支
         value = self.value_head(shared_features)
@@ -742,11 +739,13 @@ def main():
             # 动作选择
             if agent.step % agent.training_freq == 0:
                 action_index = agent.select_action(s_t)
-            
-            # 执行动作
-            a_t = np.zeros([2])
-            a_t[action_index] = 1
-            
+                # 执行动作
+                a_t = np.zeros([2])
+                a_t[action_index] = 1
+            else:
+                # 🔥 非决策帧强制不跳跃
+                a_t = np.array([1, 0])  # 强制不跳跃
+                        
             x_t1_colored, r_t, terminal = game_state.frame_step(a_t)
             x_t1 = agent.preprocess_state(x_t1_colored)
             x_t1 = np.reshape(x_t1, (80, 80, 1))

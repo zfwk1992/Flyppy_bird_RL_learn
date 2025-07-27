@@ -1,0 +1,91 @@
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                          Dueling DQN Network Architecture                          │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+
+Input: 4×80×80 (4 consecutive frames via sliding window)
+    │
+    ▼
+┌─────────────────┐
+│   Conv2d Layer1 │  32 filters, 8×8 kernel, stride=4, padding=2
+│   BatchNorm2d   │  → Output: 32×20×20
+│   ReLU          │
+└─────────────────┘
+    │
+    ▼
+┌─────────────────┐
+│   Conv2d Layer2 │  64 filters, 4×4 kernel, stride=2, padding=1  
+│   BatchNorm2d   │  → Output: 64×10×10
+│   ReLU          │
+└─────────────────┘
+    │
+    ▼
+┌─────────────────┐
+│   Conv2d Layer3 │  64 filters, 3×3 kernel, stride=1, padding=1
+│   BatchNorm2d   │  → Output: 64×10×10
+│   ReLU          │
+└─────────────────┘
+    │
+    ▼
+┌─────────────────┐
+│    Flatten      │  → Output: 6400 (64×10×10)
+│ Dimension Check │  → Validate input size
+└─────────────────┘
+    │
+    ▼
+┌─────────────────┐
+│   Shared FC     │  Linear(6400→512) + ReLU + Dropout(0.3)
+│   (Fixed)       │  → Deterministic processing
+└─────────────────┘
+                   │
+           ┌───────┴───────┐ Dueling Split
+           │               │
+           ▼               ▼
+    ┌─────────────┐ ┌─────────────┐
+    │ Value Head  │ │Advantage Head│
+    │   V(s)      │ │   A(s,a)    │
+    │  [1 unit]   │ │  [2 units]  │
+    └─────────────┘ └─────────────┘
+           │               │
+           └───────┬───────┘
+                   ▼
+    ┌─────────────────────────────┐
+    │        Dueling Fusion       │
+    │                             │
+    │ Q(s,a) = V(s) + A(s,a)      │
+    │        - mean(A(s,:))       │
+    │                             │
+    │    Output: [2 actions]      │
+    └─────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                              Key Components                                         │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│ • Feature Extractor: 3 Conv2d layers with BatchNorm for enhanced features        │
+│ • Fixed Architecture: Deterministic processing with dimension validation          │
+│ • Dueling Architecture: Separate Value and Advantage streams                      │
+│ • Mathematical Fusion: Q(s,a) = V(s) + A(s,a) - mean(A(s,:))                    │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                            Network Flow                                            │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│ 1. Input Processing: 4×80×80 → Feature maps via 3 convolution layers             │
+│ 2. Feature Extraction: Progressive feature extraction with batch normalization    │
+│ 3. Dimension Validation: Strict checking of feature dimensions (6400)            │
+│ 4. Shared Processing: Fixed FC layer with dropout for regularization             │
+│ 5. Dueling Split: Shared features → Value & Advantage branches                    │
+│ 6. Mathematical Fusion: Combine V(s) and A(s,a) with mean normalization          │
+│ 7. Action Selection: Output Q-values for 2 actions (jump/no-jump)                │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                           Advantages of This Design                                │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│ • Dueling Architecture: Better learning of state values vs action advantages      │
+│ • Fixed Architecture: Deterministic behavior and consistent training              │
+│ • Enhanced Features: Third convolution layer for better feature extraction        │
+│ • Dimension Safety: Strict validation prevents runtime errors                     │
+│ • Batch Normalization: Stable training and faster convergence                     │
+│ • Mean Normalization: Resolves identifiability problem in dueling                 │
+│ • Efficient Feature Reuse: Shared backbone for both value streams                 │
+└─────────────────────────────────────────────────────────────────────────────────────┘
