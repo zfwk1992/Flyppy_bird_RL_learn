@@ -13,6 +13,7 @@ def find_latest_model(saved_networks_dir):
     if not os.path.exists(saved_networks_dir):
         return None
     model_files = [f for f in os.listdir(saved_networks_dir) if f.endswith('.pth')]
+    #model_files = [f for f in os.listdir(saved_networks_dir) if f.endswith('stable_best_bs128_378.pth')]
     if not model_files:
         return None
     model_files.sort(key=lambda x: os.path.getmtime(os.path.join(saved_networks_dir, x)), reverse=True)
