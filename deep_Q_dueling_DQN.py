@@ -256,7 +256,7 @@ class StableDQNAgent:
         
         # 网络更新参数 - 调整以适应大批次
         self.target_update_freq = 125000  # 增加目标网络更新频率 （大概5000局游戏替换一次）
-        self.training_freq = 4
+        self.training_freq = 1
         self.batch_size = 128  # 增大批次大小
         
         # 性能跟踪

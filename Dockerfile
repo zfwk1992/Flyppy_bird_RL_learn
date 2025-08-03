@@ -46,5 +46,5 @@ ENV PYTHONPATH=/app
 EXPOSE 8888
 
 # 默认命令
-#CMD ["python3", "deep_Q_dueling_DQN.py"]
-CMD ["python3", "continue_training.py"]
+CMD ["python3", "deep_Q_dueling_DQN.py"]
+#CMD ["python3", "continue_training.py"]
