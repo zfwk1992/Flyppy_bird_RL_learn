@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 虚拟环境（CUDA 版 torch 约 3GB，绝不能进仓库）
+.venv/
+venv/
+env/
+
+# 训练产物
+runs/
+logs/
+logs_bird/
+*.pth
+*.pt
+
+# 输出
+*.mp4
+training_progress_plot.png
