@@ -1,0 +1,22 @@
+# Windows 用户请直接跑 setup.ps1，它会处理 PyTorch 的三个坑（见脚本注释）。
+# 这个文件只列非 torch 的依赖，供手动安装或非 Windows 平台参考。
+#
+#   pip install -r requirements.txt
+#
+# 然后单独装 torch：
+#   GPU:  pip install torch --index-url https://download.pytorch.org/whl/cu126
+#   CPU:  pip install torch --index-url https://download.pytorch.org/whl/cpu
+#
+# 注意：Windows 上 PyPI 的 `pip install torch` 装到的是 **CPU 构建**，
+# 必须走上面 pytorch.org 的索引才能拿到 CUDA 版。Linux 上则相反。
+
+numpy
+opencv-python
+pygame
+
+# plot.py / monitor.py 的画图与表格；训练本身不需要
+pandas
+matplotlib
+
+# 跑单测
+pytest

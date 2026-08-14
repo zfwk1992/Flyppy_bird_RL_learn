@@ -2,19 +2,25 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.pytest_cache/
 
-# 虚拟环境（CUDA 版 torch 约 3GB，绝不能进仓库）
-.venv/
-venv/
+# 虚拟环境（CUDA 版 torch 近 3GB，绝不能进仓库）
+# 用 * 通配是因为 setup.ps1 的 -VenvDir 允许任意名字（.venv_test / .venv310 ...），
+# 只写 .venv/ 的话换个名字就会把两三万个 site-packages 文件抖进 git status。
+.venv*/
+venv*/
 env/
 
 # 训练产物
 runs/
-logs/
-logs_bird/
 *.pth
 *.pt
 
+# 后台训练的 stdout/stderr 重定向（runs_mlp60.log / runs_mlp80.err 这类）
+*.log
+*.err
+
 # 输出
 *.mp4
-training_progress_plot.png
+*.png
+!images/*.png

@@ -1,8 +1,8 @@
-"""
-game/flappy_env.py 与 train_flappy_dqn.py 的正确性单测。
+﻿"""
+game/flappy_env.py 与 flappy/ 包的正确性单测。
 
-每一个测试都对应一个在旧管线里真实存在过的 bug —— 注释里标注了旧代码的位置
-以及旧实现会在哪一行断言上失败。
+每一个测试都对应一个在旧管线里真实存在过的 bug —— 注释里说明了旧实现错在哪，
+以及它会在哪一行断言上失败。旧代码已删除，可在 git 历史中查阅。
 
 运行：
     python test/test_env_and_buffer.py        # 独立运行
@@ -32,9 +32,8 @@ SHAPING_COEF = 0.05
 def test_reward_accumulation_and_telescoping():
     """奖励必须逐项累加，且势能塑形必须精确望远镜求和。
 
-    旧环境在 wrapped_flappy_bird_fast.py:213 对塑形项做了
-    max(-0.01, min(0.01, ...)) 截断，破坏了 Ng et al. 1999 的策略不变性，
-    必然无法通过最后一条断言。
+    旧环境对塑形项做了 max(-0.01, min(0.01, ...)) 截断，破坏了
+    Ng et al. 1999 的策略不变性，必然无法通过最后一条断言。
     """
     env = FlappyEnv()
     env.reset()
@@ -132,8 +131,8 @@ def test_telescoping_on_terminating_episode():
 # 2. 同一帧既得分又撞死 —— 两份奖励都要保留
 # ======================================================================
 def test_score_and_crash_same_frame():
-    """旧代码 wrapped_flappy_bird_fast.py:156 的 `reward = -2` 是赋值，
-    会把 :113 的 `reward = 20` 整个覆盖掉，返回 -2。
+    """旧代码的 `reward = -2` 是赋值，会把前面的 `reward = 20` 整个覆盖掉，
+    同一帧既过管道又撞死时只返回 -2。
     """
     # 故意用不对称的奖励值：正确结果 -2.0 与"只拿死亡奖励"的 -3.0
     # 和"只拿管道奖励"的 +1.0 都不同，断言才有判别力
@@ -144,7 +143,7 @@ def test_score_and_crash_same_frame():
     # player_mid = 57 + 17 = 74.0；需要 prev_mid ∈ (74, 79]，即 x ∈ (48, 53]
     pipe_x = 50
     env.upperPipes = [{'x': pipe_x, 'y': 0 - flappy_env.PIPE_HEIGHT}]
-    env.lowerPipes = [{'x': pipe_x, 'y': 0 + flappy_env.PIPEGAPSIZE}]
+    env.lowerPipes = [{'x': pipe_x, 'y': 0 + env.pipe_gap}]
 
     # 构造：本帧撞地。checkCrash 判定 playery + PLAYER_HEIGHT >= BASEY - 1
     env.playery = 385
@@ -169,7 +168,7 @@ def test_score_and_crash_same_frame():
 # 3. terminal 观测必须是真实的崩溃帧，且 done 后不可再 step
 # ======================================================================
 def test_terminal_frame_is_crash_frame():
-    """旧代码 wrapped_flappy_bird_fast.py:154 在绘制之前调用 self.__init__()，
+    """旧代码在绘制之前调用 self.__init__()，
     于是 terminal 那一帧返回的其实是下一局的第一帧 —— 旧环境里
     obs_terminal 与 reset() 的观测是 **相等** 的。
     """
@@ -218,18 +217,20 @@ def test_terminal_frame_is_crash_frame():
 def test_replay_roundtrip_and_stack_integrity():
     """采样出来的 s 必须是 [i, i-1, i-2, i-3]，s1 必须是 [i+1, i, i-1, i-2]。
 
-    对应旧管线的缺陷：terminal 那一轮仍执行无条件的 s_t = s_t1
-    (deep_Q_dueling_DQN.py:785)，导致新回合前 3 次决策的帧栈里混着上一局的
-    画面，且以 done=False 存入 —— 约 23% 的经验是物理不可能的状态。
+    对应旧管线的缺陷：terminal 那一轮仍执行无条件的 s_t = s_t1，
+    导致新回合前 3 次决策的帧栈里混着上一局的画面，且以 done=False 存入
+    —— 约 23% 的经验是物理不可能的状态。
     """
-    from train_flappy_dqn import ReplayBuffer
+    from flappy.replay import ReplayBuffer
 
     STACK = 4
-    buf = ReplayBuffer(capacity=500, stack=STACK, size=80)
+    # 刻意用非正方形，才能抓到把 h/w 写反的错误
+    H, W = 80, 128
+    buf = ReplayBuffer(capacity=500, stack=STACK, h=H, w=W)
 
     # 合成帧：第 ep 回合的第 i 帧全部填充值 (ep*50 + i)，可从像素值反推来源
     def make_frame(ep, i):
-        return np.full((80, 80), (ep * 50 + i) % 256, dtype=np.uint8)
+        return np.full((H, W), (ep * 50 + i) % 256, dtype=np.uint8)
 
     records = []          # (ep, i) —— 这条经验的 state 最新帧应当是第 i 帧
     for ep in range(3):
@@ -269,7 +270,7 @@ def test_replay_roundtrip_and_stack_integrity():
 
     # sample() 的拼接与上面手工拼的一致
     s, a, r, s1, d = buf.sample(64)
-    assert s.shape == (64, STACK, 80, 80) and s1.shape == (64, STACK, 80, 80)
+    assert s.shape == (64, STACK, H, W) and s1.shape == (64, STACK, H, W)
     assert s.dtype == np.uint8 and s1.dtype == np.uint8
     assert np.array_equal(s1[:, 1:], s[:, :STACK - 1]), \
         "sample() 拼出的 next_state 与 state 不满足滑窗关系"
@@ -282,12 +283,13 @@ def test_replay_roundtrip_and_stack_integrity():
 # 5. 帧跳过对齐：动作真被重复 k 帧，奖励全额累加
 # ======================================================================
 def test_frame_skip_alignment():
-    """对应旧管线最严重的缺陷：`agent.step += 1` 夹在两个 `% k` 判断之间
-    (continue_training.py:758/773/776)，动作在 step≡0 时选、经验在 step≡3 时存，
+    """对应旧管线最严重的缺陷：`agent.step += 1` 夹在两个 `% k` 判断之间，
+    动作在 step≡0 时选、经验在 step≡3 时存，
     两者永不同时成立 —— 存进去的动作标签是"选择的动作"，而那一帧实际执行的
     是硬编码的不跳 [1,0]，同时 75% 的奖励与 terminal 被丢弃。
     """
-    from train_flappy_dqn import CONFIG, skip_step
+    from flappy.config import CONFIG
+    from flappy.rollout import skip_step
 
     cfg = dict(CONFIG)
     K = cfg['frame_skip']
@@ -373,16 +375,16 @@ def test_frame_skip_alignment():
 # 6. 动作选择必须是确定性的
 # ======================================================================
 def test_act_time_determinism():
-    """一行断言，当初就能抓到 deep_Q_dueling_DQN.py:134 的 Dropout(0.3) ——
+    """一行断言，当初就能抓到旧网络里的 Dropout(0.3) ——
     它让"贪婪"动作变成随机，同时让目标网络的 BatchNorm 用 minibatch 统计量，
     使 TD 目标随批次组成而变，Bellman 算子失去不动点。
     """
     import torch
 
-    from train_flappy_dqn import DuelingDQN
+    from flappy.model import DuelingDQN
 
     net = DuelingDQN()
-    x = torch.randint(0, 2, (5, 4, 80, 80), dtype=torch.uint8) * 255
+    x = torch.randint(0, 2, (5, 4, flappy_env.OBS_W, flappy_env.OBS_H), dtype=torch.uint8) * 255
 
     net.train()                       # 即便处于 train 模式也必须确定
     q1, q2 = net(x), net(x)
@@ -462,17 +464,22 @@ def test_observation_matches_legacy_pipeline():
     def legacy():
         raw = env.raw_obs()                                   # (288,512,3)
         gray = cv2.cvtColor(raw, cv2.COLOR_BGR2GRAY)
-        small = cv2.resize(gray, (80, 80), interpolation=cv2.INTER_AREA)
+        # dsize 是 (cols, rows)：cols 对应屏幕高、rows 对应屏幕宽，
+        # 所以是 (OBS_H, OBS_W)，与 flappy_env._observe 一致
+        small = cv2.resize(gray, (flappy_env.OBS_H, flappy_env.OBS_W),
+                           interpolation=cv2.INTER_AREA)
         return cv2.threshold(small, 1, 255, cv2.THRESH_BINARY)[1].astype(np.uint8)
 
     random.seed(7)
     mismatched = total = 0
+    expected = (flappy_env.OBS_W, flappy_env.OBS_H)
     for i in range(200):
         if env.done:
             env.reset()
         new = env.step(1 if random.random() < 0.2 else 0, render=True)[0]
         old = legacy()                       # raw_obs 读的是同一块已绘制的 SCREEN
-        assert new.shape == (80, 80) and new.dtype == np.uint8
+        assert new.shape == expected and new.dtype == np.uint8, \
+            f"观测形状 {new.shape} != {expected}"
         assert set(np.unique(new)).issubset({0, 255}), "观测必须是 {0,255} 二值"
         mismatched += int((new != old).sum())
         total += new.size
@@ -490,9 +497,8 @@ def test_observation_matches_legacy_pipeline():
 def test_pipe_gap_is_configurable():
     """间隙是难度的唯一旋钮，必须实测生效。
 
-    不能直接改 wrapped_flappy_bird_fast.py 的 PIPEGAPSIZE —— 那个模块被 4 个
-    旧脚本共用；而且 _base.getRandomPipe() 把 PIPEGAPSIZE 写死在返回值里，
-    根本改不了。所以 FlappyEnv 用自己的 _random_pipe()。
+    旧实现把间隙作为模块级常量 PIPEGAPSIZE 写死在管道生成函数的返回值里，
+    根本调不了。所以 FlappyEnv 用自己的 _random_pipe()，间隙走实例属性。
     """
     from game.flappy_env import DEFAULT_PIPE_GAP
 
@@ -524,6 +530,122 @@ def test_pipe_gap_is_configurable():
 
 
 # ======================================================================
+# 10. 域随机化：分布要真的变宽，且不能生成物理上到不了的管道
+# ======================================================================
+def test_pipe_randomization():
+    """随机化必须同时满足三件事，缺一不可。
+
+    (a) 分布真的变宽 —— 否则等于没做。固定模式下缝隙中心只有 8 个离散取值、
+        跨度 70px（可用空间的 17%），缝隙大小和水平间距完全固定。
+
+    (b) **最坏情况下**的竖直需求速度不超过物理上限 —— 否则会生成
+        无论如何都过不去的管道。那不是"更难"，是不可学：网络收到一批
+        必死样本，白白污染价值估计。
+
+        注意这里检查的**不是** |Δcenter| / 间距。那个比值现在可以超过
+        max_delta_frac，而且是正确的：从窄缝跳到宽缝时，落点范围更大，
+        本来就可以跳得更远。真正该守的不变量是把两端的落点余量都算进去的
+        需求行程：
+
+            need = |Δcenter| + slack_prev − slack_next
+            need / (S/5) ≤ 5 · max_delta_frac
+
+        其中 slack 是扣掉悬停振荡之后、缝隙中心还能偏离多少
+        （见 flappy_env._travel_slack）。
+
+    (c) 窄缝必须拿到更多飞行空间 —— 缝隙越窄，允许的落差越小。
+        否则会出现"上一根缝隙在最上面，下一根又窄又在最下面"这种
+        几何上够得着、实际却几乎必死的组合。
+    """
+    import numpy as np
+
+    original_crash = flappy_env.checkCrash
+    flappy_env.checkCrash = lambda *a, **kw: False      # 让回合跑得够长
+    try:
+        FRAC = 0.6
+        PIPE_VEL = 5.0            # 管道左移速度 px/帧
+        BIRD_VEL = 5.0            # 小鸟极限竖直速度 px/帧（两个方向都是）
+
+        def survey(**kw):
+            random.seed(7)
+            env = FlappyEnv(**kw)
+            centers, gaps = [], []
+            pairs = []            # (间距, 上一根gap, 这一根gap, 落差)
+            for _ in range(12):
+                env.reset()
+                for _ in range(600):
+                    env.step(0, render=False)
+                    ps = sorted(env.upperPipes, key=lambda p: p['x'])
+                    for p in ps:
+                        centers.append(p['y'] + PIPE_HEIGHT + p['gap'] / 2.0)
+                        gaps.append(p['gap'])
+                    for a, b in zip(ps, ps[1:]):
+                        ca = a['y'] + PIPE_HEIGHT + a['gap'] / 2.0
+                        cb = b['y'] + PIPE_HEIGHT + b['gap'] / 2.0
+                        pairs.append((b['x'] - a['x'], a['gap'], b['gap'],
+                                      abs(cb - ca)))
+            return np.array(centers), np.array(gaps), np.array(pairs)
+
+        c0, g0, p0 = survey(pipe_gap=100)
+        c1, g1, p1 = survey(pipe_gap=100, randomize=True, max_delta_frac=FRAC)
+        s0, s1 = p0[:, 0], p1[:, 0]
+
+        # (a) 每一个维度都必须显著变宽
+        assert np.ptp(c1) > 3 * np.ptp(c0), \
+            f"缝隙中心跨度 {np.ptp(c1):.0f} 没有明显超过固定模式的 {np.ptp(c0):.0f}"
+        assert len(np.unique(np.round(c1, 1))) > 100, \
+            f"缝隙中心只有 {len(np.unique(np.round(c1,1)))} 个取值，太离散"
+        assert np.ptp(g0) == 0 and np.ptp(g1) > 50, \
+            f"缝隙大小跨度：固定 {np.ptp(g0):.0f} -> 随机 {np.ptp(g1):.0f}"
+        assert np.ptp(s0) == 0 and np.ptp(s1) > 50, \
+            f"水平间距跨度：固定 {np.ptp(s0):.0f} -> 随机 {np.ptp(s1):.0f}"
+
+        # (b) 最坏情况的需求速度不许超过物理上限
+        spacing, gap_a, gap_b, delta = p1[:, 0], p1[:, 1], p1[:, 2], p1[:, 3]
+        slack_a = np.array([flappy_env.FlappyEnv._travel_slack(g) for g in gap_a])
+        slack_b = np.array([flappy_env.FlappyEnv._travel_slack(g) for g in gap_b])
+        need = np.maximum(delta + slack_a - slack_b, 0.0)
+        speed = need / (spacing / PIPE_VEL)
+        limit = BIRD_VEL * FRAC
+        assert speed.max() <= limit + 1e-6, (
+            f"最坏需求速度 {speed.max():.3f} px/帧 超过了 {limit:.3f} "
+            f"—— 会生成实际过不去的管道")
+
+        # (c) 窄缝必须比宽缝拿到更小的落差（= 更多飞行空间）。
+        #     默认 gap_range 下界是 80，所以要专门开一组含 60px 窄缝的样本。
+        _, _, pn = survey(pipe_gap=100, randomize=True, max_delta_frac=FRAC,
+                          gap_range=(60., 165.))
+        n_spacing, n_gap_a, n_gap_b, n_delta = pn[:, 0], pn[:, 1], pn[:, 2], pn[:, 3]
+        narrow = n_gap_b <= 70
+        wide = n_gap_b >= 120
+        assert narrow.any() and wide.any(), "样本里没有覆盖到窄缝或宽缝"
+        assert n_delta[narrow].mean() < n_delta[wide].mean(), (
+            f"窄缝平均落差 {n_delta[narrow].mean():.1f} 没有小于宽缝的 "
+            f"{n_delta[wide].mean():.1f} —— 窄缝没有拿到额外的飞行空间")
+
+        # 窄缝那一组同样不许突破速度上限
+        n_slack_a = np.array([flappy_env.FlappyEnv._travel_slack(g) for g in n_gap_a])
+        n_slack_b = np.array([flappy_env.FlappyEnv._travel_slack(g) for g in n_gap_b])
+        n_speed = np.maximum(n_delta + n_slack_a - n_slack_b, 0.0) / (n_spacing / PIPE_VEL)
+        assert n_speed.max() <= limit + 1e-6, (
+            f"含 60px 窄缝时最坏需求速度 {n_speed.max():.3f} 超过了 {limit:.3f}")
+
+        # 缝隙必须始终留在屏幕内（上下沿都不能越界）
+        assert (c1 - g1 / 2.0).min() >= 0, "缝隙上沿越过了天花板"
+        assert (c1 + g1 / 2.0).max() <= BASEY, "缝隙下沿越过了地面"
+
+        print(f"  [10] OK  center span {np.ptp(c0):.0f}->{np.ptp(c1):.0f}px "
+              f"({len(np.unique(np.round(c1,1)))} values), "
+              f"gap {np.ptp(g0):.0f}->{np.ptp(g1):.0f}px, "
+              f"spacing {np.ptp(s0):.0f}->{np.ptp(s1):.0f}px")
+        print(f"           worst-case speed {speed.max():.2f} (60px set {n_speed.max():.2f}) "
+              f"<= {limit:.2f} px/frame; "
+              f"delta narrow {n_delta[narrow].mean():.1f} < wide {n_delta[wide].mean():.1f} px")
+    finally:
+        flappy_env.checkCrash = original_crash
+
+
+# ======================================================================
 def _run_all():
     tests = [
         test_reward_accumulation_and_telescoping,
@@ -536,6 +658,7 @@ def _run_all():
         test_render_flag_does_not_change_physics,
         test_observation_matches_legacy_pipeline,
         test_pipe_gap_is_configurable,
+        test_pipe_randomization,
     ]
     print(f"running {len(tests)} env tests...")
     for fn in tests:

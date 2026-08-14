@@ -1,29 +1,27 @@
-"""
-干净的 Flappy Bird 环境 —— 供 train_flappy_dqn.py 使用。
+"""Flappy Bird 环境 —— Gym 风格，供 train.py / eval.py / play.py 共用。
 
-与 wrapped_flappy_bird_fast.py 的关系
-------------------------------------
-本模块 **导入** 而非复制 wrapped_flappy_bird_fast，共用它的：
-  - pygame 初始化与 SCREEN
+与 game/resources.py 的分工
+---------------------------
+本模块 **导入** 底座而非复制它，共用：
+  - pygame 无头初始化与 SCREEN
   - 精灵资源 IMAGES / HITMASKS
   - 像素级碰撞检测 checkCrash
-  - 管道生成 getRandomPipe
-物理参数（重力 0.5、扇翅 -5、间隙 150）与旧环境 **逐位一致**，
-这样若训练仍不收敛，责任可明确归到训练代码而非难度变化。
+游戏规则（物理、奖励、得分、观测）全部在这里，只此一份。
 
 相对旧 GameState.frame_step 修正的四个缺陷
 ------------------------------------------
-1. 崩溃时旧代码在绘制之前调用 self.__init__()（wrapped_flappy_bird_fast.py:154），
-   导致 terminal 观测其实是 **下一局的第一帧**。这里 step() 绝不内部 reset，
-   崩溃帧被如实绘制并返回。
-2. 旧代码 reward 用赋值（:113 的 `reward = 20`、:156 的 `reward = -2`），
-   同一帧既过管道又撞死时 +20 会被 -2 覆盖。这里一律用 `+=` 累加。
-3. 旧代码的势能塑形在动作施加 **之前** 计算（:83），得到的是
-   γΦ(s_t) - Φ(s_{t-1})，与当前动作完全无关。这里只暴露 Φ，
-   差分由调用方在 **决策级** 计算（见 train_flappy_dqn.skip_step），
-   这样 Ng-Harada-Russell 的策略不变性才精确成立。
-4. 旧代码用 4 像素窗口判定得分（:107-113），当前靠 x 坐标奇偶性的
-   算术巧合才没漏判。这里改为显式跨越测试，与管道位移严格对齐。
+（旧实现已删除，可在 git 历史中查阅 game/wrapped_flappy_bird_fast.py）
+
+1. 崩溃时旧代码在绘制之前调用 self.__init__()，导致 terminal 观测其实是
+   **下一局的第一帧**。这里 step() 绝不内部 reset，崩溃帧被如实绘制并返回。
+2. 旧代码 reward 用赋值（`reward = 20`、`reward = -2`），同一帧既过管道
+   又撞死时 +20 会被 -2 覆盖。这里一律用 `+=` 累加。
+3. 旧代码的势能塑形在动作施加 **之前** 计算，得到的是 γΦ(s_t) - Φ(s_{t-1})，
+   与当前动作完全无关。这里只暴露 Φ，差分由调用方在 **决策级** 计算
+   （见 flappy.rollout.skip_step），这样 Ng-Harada-Russell 的策略不变性
+   才精确成立。
+4. 旧代码用 4 像素窗口判定得分，当前靠 x 坐标奇偶性的算术巧合才没漏判。
+   这里改为显式跨越测试，与管道位移严格对齐。
 
 另外移除了热循环里的 print / display.update() / FPSCLOCK.tick()，
 实测吞吐 439 fps -> 1464 fps。
@@ -36,7 +34,7 @@ import cv2
 import numpy as np
 import pygame
 
-from . import wrapped_flappy_bird_fast as _base
+from . import resources as _base
 
 # ---- 复用底层资源与常量（不复制实现） ----------------------------------
 SCREEN = _base.SCREEN
@@ -46,7 +44,6 @@ HITMASKS = _base.HITMASKS
 SCREENWIDTH = _base.SCREENWIDTH
 SCREENHEIGHT = _base.SCREENHEIGHT
 BASEY = _base.BASEY
-PIPEGAPSIZE = _base.PIPEGAPSIZE
 PLAYER_WIDTH = _base.PLAYER_WIDTH
 PLAYER_HEIGHT = _base.PLAYER_HEIGHT
 PIPE_WIDTH = _base.PIPE_WIDTH
@@ -54,21 +51,61 @@ PIPE_HEIGHT = _base.PIPE_HEIGHT
 BACKGROUND_WIDTH = _base.BACKGROUND_WIDTH
 
 checkCrash = _base.checkCrash
-# 注意：_base.getRandomPipe 把 PIPEGAPSIZE 写死在函数体里，无法调节难度，
-# 所以本模块用自己的 _random_pipe()（见 FlappyEnv）。这里保留再导出只为兼容。
-getRandomPipe = _base.getRandomPipe
 
-# 间隙上沿的候选高度（与 _base.getRandomPipe 一致，保持难度变化的唯一来源
-# 是间隙大小本身，便于归因）。实际值还要加上 int(BASEY * 0.2)。
+# 间隙上沿的候选高度（randomize=False 时用）。实际值还要加上 int(BASEY * 0.2)。
+#
+# 实测这套固定值有多窄：缝隙中心只有 8 个离散取值、跨度 70px，
+# 而留 38px 余量后理论可用范围是 224px —— 只覆盖了 31%。
+# 缝隙大小完全固定，水平间距也几乎固定（144/145/150/151）。
+# 于是网络只需要应付一个很窄的分布，学到的是一套窄策略而非"会玩这个游戏"。
+# randomize=True 打开域随机化来解决这件事，见 _sample_pipe()。
 GAP_Y_CHOICES = (30, 40, 50, 60, 70, 80, 90, 100)
+
+# ---- 域随机化的默认范围 ------------------------------------------------
+# 缝隙大小：下界要能过（小鸟高 24px），上界给到相当宽松
+DEFAULT_GAP_RANGE = (80.0, 165.0)
+# 相邻管道的水平间距。原来恒为 144。
+DEFAULT_SPACING_RANGE = (115.0, 200.0)
+# 缝隙上下沿距天花板 / 地面的最小余量：太贴边等于必死
+DEFAULT_EDGE_MARGIN = 38.0
+# 相邻缝隙中心的最大落差 / 水平间距。见 _sample_pipe() 里的可达性推导。
+DEFAULT_MAX_DELTA_FRAC = 0.6
+
+# 小鸟能维持的最小竖直振荡幅度（像素）。
+#
+# 动作以 frame_skip 为粒度，一次扇翅把 velY 瞬间设成 -5，之后重力 +0.5/帧。
+# 于是"悬停"必然是锯齿形的，振幅有硬下限。实测（scratchpad/hover.py）：
+#   每 4 决策扇一次 -> 振幅 22.5px，但净漂移 -20px/周期（在往上飘）
+#   每 5 决策扇一次 -> 振幅 22.5px，净漂移  -5px/周期  <- 唯一接近悬停的节奏
+#   每 6 决策扇一次 -> 振幅 42.5px，净漂移 +15px/周期（在往下掉）
+# 所以 22.5px 是小鸟"稳住身形"所需的最小竖直空间，和缝隙宽度无关。
+HOVER_AMPLITUDE = 22.5
+
+# 缝隙很窄时，除了悬停振荡还得留一点纯余量给瞄准误差。
+# 低于这个值的缝隙即使几何上过得去，实际也几乎必死，不该生成。
+MIN_AIM_MARGIN = 8.0
 
 # 管道上下间隙。150 是本仓库此前放宽过的值（原版 Flappy Bird 是 100）。
 # 越小越难：小鸟的可通行竖直窗口越窄，容错越低。
 DEFAULT_PIPE_GAP = 150
 
 # 网络输入尺寸。观测的缩放和二值化已下沉到环境内部（_observe），
-# 这样 step() 直接返回 80x80，省掉一次 288x512 数组的跨函数传递。
-OBS_SIZE = 80
+# 这样 step() 直接返回观测，省掉一次 288x512 数组的跨函数传递。
+#
+# **各向异性**：屏幕是 288x512，任务的精度需求几乎全在竖直方向
+# （要对准缝隙），所以竖直方向给更高的分辨率。
+#   OBS_W = 80  <- 屏幕宽 288，压缩 3.6 倍
+#   OBS_H = 128 <- 屏幕高 512，压缩 4.0 倍（原来压 6.4 倍）
+# 实测：80x80 时 60px 的缝隙只剩 3 个像素行，容错约 2 像素，
+# 比 conv1 的 stride(4 像素) 还小；加到 128 后翻倍。
+#
+# **注意数组方向**：pygame.surfarray 是 width-major，所以观测数组的
+#   axis 0 = 屏幕宽方向 (OBS_W)
+#   axis 1 = 屏幕高方向 (OBS_H)
+# 也就是说画面在数组里是转置的。这对卷积网络没有影响（它不在乎哪边是"上"），
+# 但决定了 cv2.resize 的 dsize 必须写成 (OBS_H, OBS_W)。
+OBS_W = 80
+OBS_H = 128
 
 # ---- 默认奖励尺度 ------------------------------------------------------
 # 归一化到 ±1，使 Q_mean ≈ 0.9 × 已过管道数，Q ∈ [-1, ~13]，
@@ -87,18 +124,47 @@ class FlappyEnv:
 
     def __init__(self, pipe_reward=PIPE_REWARD, death_reward=DEATH_REWARD,
                  alive_reward=ALIVE_REWARD, throttle_fps=None,
-                 pipe_gap=DEFAULT_PIPE_GAP):
+                 pipe_gap=DEFAULT_PIPE_GAP,
+                 randomize=False,
+                 gap_range=DEFAULT_GAP_RANGE,
+                 spacing_range=DEFAULT_SPACING_RANGE,
+                 edge_margin=DEFAULT_EDGE_MARGIN,
+                 max_delta_frac=DEFAULT_MAX_DELTA_FRAC,
+                 obs_w=OBS_W, obs_h=OBS_H):
+        # 观测尺寸是实例属性而不是模块常量 —— 否则改配置不会改环境实际输出，
+        # 会在第一次前向时以形状不匹配的方式炸出来
+        self.obs_w = int(obs_w)
+        self.obs_h = int(obs_h)
         self.pipe_reward = float(pipe_reward)
         self.death_reward = float(death_reward)
         self.alive_reward = float(alive_reward)
         self.throttle_fps = throttle_fps
 
-        # 难度旋钮：间隙越小越难
+        # 难度旋钮：间隙越小越难。randomize=True 时它只作为回退值，
+        # 实际缝隙大小逐根从 gap_range 采样。
         self.pipe_gap = int(pipe_gap)
         if self.pipe_gap < PLAYER_HEIGHT + 8:
             raise ValueError(
                 "pipe_gap=%d 对高度 %d 的小鸟来说无法通过（至少要 %d）"
                 % (self.pipe_gap, PLAYER_HEIGHT, PLAYER_HEIGHT + 8))
+
+        # ---- 域随机化 ----
+        self.randomize = bool(randomize)
+        self.gap_range = (float(gap_range[0]), float(gap_range[1]))
+        self.spacing_range = (float(spacing_range[0]), float(spacing_range[1]))
+        self.edge_margin = float(edge_margin)
+        self.max_delta_frac = float(max_delta_frac)
+        if self.randomize:
+            if self.gap_range[0] < PLAYER_HEIGHT + 8:
+                raise ValueError(
+                    "gap_range 下界 %.0f 对高度 %d 的小鸟无法通过（至少要 %d）"
+                    % (self.gap_range[0], PLAYER_HEIGHT, PLAYER_HEIGHT + 8))
+            # 最大的缝隙也必须塞得进上下余量之间，否则采样区间是空的
+            if self.gap_range[1] + 2 * self.edge_margin > BASEY:
+                raise ValueError(
+                    "gap_range 上界 %.0f 加上下各 %.0f 的余量超过了可用高度 %.0f"
+                    % (self.gap_range[1], self.edge_margin, BASEY))
+
         self._clock = pygame.time.Clock() if throttle_fps else None
         self._done = True          # 强制先 reset()
         self.reset()
@@ -121,18 +187,20 @@ class FlappyEnv:
         self.basex = 0
         self.baseShift = IMAGES['base'].get_width() - BACKGROUND_WIDTH
 
-        newPipe1 = self._random_pipe()
-        newPipe2 = self._random_pipe()
-        self.upperPipes = [
-            {'x': SCREENWIDTH, 'y': newPipe1[0]['y']},
-            {'x': SCREENWIDTH + (SCREENWIDTH / 2), 'y': newPipe2[0]['y']},
-        ]
-        self.lowerPipes = [
-            {'x': SCREENWIDTH, 'y': newPipe1[1]['y']},
-            {'x': SCREENWIDTH + (SCREENWIDTH / 2), 'y': newPipe2[1]['y']},
-        ]
+        # 第一根缝隙要从小鸟的出生高度够得着，所以可达性链条从 playery 起算。
+        # 出生时小鸟是静止的、不受缝隙约束，所以偏移余量记为 0。
+        self._last_gap_center = float(self.playery + PLAYER_HEIGHT / 2.0)
+        self._last_slack = 0.0
+        self._plan_next()
 
-        # 物理参数：与 wrapped_flappy_bird_fast.py:62-68 完全一致
+        first = self._sample_pipe(SCREENWIDTH)          # 内部会 _plan_next()
+        second = self._sample_pipe(SCREENWIDTH + self._next_spacing)
+
+        self.upperPipes = [first[0], second[0]]
+        self.lowerPipes = [first[1], second[1]]
+
+        # 物理参数：与旧环境逐位一致（重力 0.5、扇翅 -5、最大下落 5），
+        # 这样若训练不收敛，责任可明确归到训练代码而非难度变化
         self.pipeVelX = -5
         self.playerVelY = 0
         self.playerMaxVelY = 5
@@ -183,7 +251,7 @@ class FlappyEnv:
                 self.playerVelY = self.playerFlapAcc
                 self.playerFlapped = True
 
-        # 2. 物理更新（顺序与 wrapped_flappy_bird_fast.py:122-128 一致）
+        # 2. 物理更新（顺序与旧环境一致）
         if self.playerVelY < self.playerMaxVelY and not self.playerFlapped:
             self.playerVelY += self.playerAccY
         if self.playerFlapped:
@@ -210,8 +278,11 @@ class FlappyEnv:
             reward += self.pipe_reward * scored
 
         # 4. 生成 / 回收管道
-        if 0 < self.upperPipes[0]['x'] < 5:
-            newPipe = self._random_pipe()
+        #    触发条件按"最后一根管道距屏幕右缘已经够 _next_spacing"来判断，
+        #    而不是原来的"第一根管道快出左边界了"—— 后者把间距锁死在
+        #    屏幕宽度的一半上，间距根本没法随机。
+        if self.upperPipes[-1]['x'] <= SCREENWIDTH - self._next_spacing:
+            newPipe = self._sample_pipe(self.upperPipes[-1]['x'] + self._next_spacing)
             self.upperPipes.append(newPipe[0])
             self.lowerPipes.append(newPipe[1])
         if self.upperPipes[0]['x'] < -PIPE_WIDTH:
@@ -252,19 +323,196 @@ class FlappyEnv:
     # ------------------------------------------------------------------
     # 管道生成（难度可调）
     # ------------------------------------------------------------------
-    def _random_pipe(self):
-        """生成一对上下管道，间隙大小取自 self.pipe_gap。
+    def _sample_pipe(self, pipe_x):
+        """采样一对上下管道，返回 (upper, lower)。
 
-        与 _base.getRandomPipe 的唯一区别就是间隙可调 —— 那个函数把
-        模块级的 PIPEGAPSIZE 写死在返回值里，改不了。
-        间隙上沿的候选高度保持一致，这样难度变化的唯一来源就是间隙本身。
+        上管道的 dict 里额外存 ``gap`` —— 缝隙大小逐根变化之后，
+        势能函数不能再读 self.pipe_gap，必须读这根管道自己的值。
+
+        randomize=False
+        ---------------
+        走原来的固定分布（8 个离散高度 + 固定缝隙），保持与既有存档可比。
+
+        randomize=True —— 域随机化
+        --------------------------
+        缝隙大小、竖直位置、水平间距三者逐根独立采样，所以**同一局之内**
+        地图就在不断变化，而不只是局与局之间不同。
+
+        竖直位置有一个**可达性约束**，这是这段代码唯一有技术含量的地方：
+        管道以 5px/帧左移，相邻管道间距 S px，于是小鸟有 S/5 帧的时间来
+        完成竖直转移。而小鸟的极限竖直速度两个方向都是 5px/帧
+        （持续扇翅时 velY 恒为 -5；自由落体的终端速度 playerMaxVelY = +5），
+        所以这段时间内最多移动 ±S px。
+
+        若不加约束地独立采样，相邻缝隙中心可能相差 224px，而间距 115px 时
+        物理上根本到不了 —— 那不是"难"，是**不可学**：网络会收到一批
+        无论如何都会死的样本，白白污染价值估计。所以把落差限制在
+        ``max_delta_frac × S``（默认 0.6，留出余量给减速和缝隙本身的宽度）。
         """
-        gap_y = random.choice(GAP_Y_CHOICES) + int(BASEY * 0.2)
-        pipe_x = SCREENWIDTH + 10
-        return [
-            {'x': pipe_x, 'y': gap_y - PIPE_HEIGHT},   # 上管道
-            {'x': pipe_x, 'y': gap_y + self.pipe_gap},  # 下管道
-        ]
+        if not self.randomize:
+            gap = float(self.pipe_gap)
+            gap_top = random.choice(GAP_Y_CHOICES) + int(BASEY * 0.2)
+            self._last_gap_center = gap_top + gap / 2.0
+            self._last_slack = max(gap - PLAYER_HEIGHT, 0.0) / 2.0
+        else:
+            # 缝隙大小和水平间距由 _plan_next() 一起定好了 —— 必须一起，
+            # 因为窄缝要求更大的间距，而间距在管道生成之前就要知道
+            gap = self._next_gap
+            lo, hi = self._center_range(gap, self._next_spacing)
+            center = random.uniform(lo, hi) if lo < hi else (lo + hi) / 2.0
+
+            self._last_gap_center = center
+            self._last_slack = self._travel_slack(gap)
+            gap_top = center - gap / 2.0
+
+        self._plan_next()
+        return (
+            {'x': pipe_x, 'y': gap_top - PIPE_HEIGHT, 'gap': gap},  # 上管道
+            {'x': pipe_x, 'y': gap_top + gap},                      # 下管道
+        )
+
+    def _plan_next(self):
+        """预先决定下一根管道的缝隙大小和水平间距。
+
+        两者必须一起定：间距的下界依赖缝隙大小（越窄要求越大的间距，
+        好给小鸟更多时间对准），而间距又要在管道真正生成之前就用来
+        判断"该不该生成了"。
+        """
+        if not self.randomize:
+            self._next_gap = float(self.pipe_gap)
+            self._next_spacing = SCREENWIDTH / 2.0
+        else:
+            self._next_gap = random.uniform(*self.gap_range)
+            self._next_spacing = self._sample_spacing(self._next_gap)
+
+    # ------------------------------------------------------------------
+    # 可通过性模型
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _travel_slack(gap):
+        """小鸟穿过这个缝隙时，中心位置还能偏离多少（像素）。
+
+        缝隙的净空是 gap - PLAYER_HEIGHT，但其中 HOVER_AMPLITUDE 那部分
+        被"稳住身形"的锯齿振荡占掉了，不能拿来当瞄准余量。
+        剩下的一半就是中心可以偏移的范围。
+        """
+        band = max(gap - PLAYER_HEIGHT, 0.0)
+        return max(band - HOVER_AMPLITUDE, 0.0) / 2.0
+
+    def _center_range(self, gap, spacing):
+        """这根管道的缝隙中心允许落在哪个区间 [lo, hi]。
+
+        三重约束，缺一不可：
+
+        **① 屏幕边界** —— 缝隙上下沿都要留出 edge_margin。
+
+        **② 可达性** —— 管道以 5px/帧左移，间距 S 给小鸟 S/5 帧；
+        小鸟两个方向的极限竖直速度都是 5px/帧，所以最多移动 ±S px。
+        乘 max_delta_frac 留余量。
+
+        **③ 小鸟并不在上一个缝隙的正中心。** 这一条是最初版本漏掉的，
+        也是窄缝配大落差会变得几乎不可能的真正原因：
+
+            小鸟可以合法地贴着上一个缝隙的边缘通过（偏移量 _last_slack），
+            而它只需要摸到这个缝隙的边缘就算过（偏移量 slack）。
+            所以最坏情况下需要走的距离是
+
+                |Δcenter| + 上一个缝隙的偏移余量 − 这个缝隙的偏移余量
+
+            缝隙越窄，slack 越小（60px 只有 6.75px，165px 有 59.25px），
+            于是"从一个宽缝跳到一个窄缝"要求的行程远大于中心间距。
+
+        合起来：
+
+            |Δcenter| ≤ max_delta_frac·S − _last_slack + slack
+
+        效果正是想要的：**上一根缝隙在上方、这一根又窄又在下方**这种组合，
+        预算会直接变成负数，于是新缝隙被强制贴近上一根的高度。
+        缝隙越窄，它能离上一根越远的余地就越小。
+        """
+        lo = self.edge_margin + gap / 2.0
+        hi = BASEY - self.edge_margin - gap / 2.0
+        if lo > hi:                      # 缝隙比可用高度还大，退化成居中
+            return (BASEY / 2.0, BASEY / 2.0)
+        if self._last_gap_center is None:
+            return (lo, hi)
+
+        budget = (self.max_delta_frac * spacing
+                  - self._last_slack + self._travel_slack(gap))
+        # 预算可能为负（宽缝 -> 窄缝且间距小）。夹到 0，表示"必须原地高度"。
+        budget = max(budget, 0.0)
+
+        lo = max(lo, self._last_gap_center - budget)
+        hi = min(hi, self._last_gap_center + budget)
+        if lo > hi:
+            # 边界和可达性打架时，边界优先（不能把管道放到屏幕外），
+            # 取屏幕内最接近上一根高度的那个点。
+            c = min(max(self._last_gap_center, self.edge_margin + gap / 2.0),
+                    BASEY - self.edge_margin - gap / 2.0)
+            return (c, c)
+        return (lo, hi)
+
+    def _min_spacing_for(self, gap):
+        """要让这个缝隙有起码的竖直活动余地，至少需要多大的水平间距。
+
+        把上面的不等式反解：想让 budget 至少有 need 像素，就需要
+
+            S ≥ (need + _last_slack − slack) / max_delta_frac
+
+        窄缝的 slack 很小，所以自动会要求更大的间距 —— 也就是给小鸟
+        更多时间去对准。这正是"窄缝要留出飞行空间"的直接实现。
+        """
+        if self._last_gap_center is None:
+            return self.spacing_range[0]
+        need = HOVER_AMPLITUDE          # 至少要能在一个悬停振幅内调整
+        s = (need + self._last_slack - self._travel_slack(gap)) / self.max_delta_frac
+        return float(s)
+
+    def _sample_spacing(self, gap=None):
+        """下一根管道与当前最后一根的水平间距。
+
+        ``gap`` 给出时（随机化模式），窄缝会自动获得更大的间距下界。
+        """
+        if not self.randomize:
+            return SCREENWIDTH / 2.0            # 原来的固定值 144
+        lo, hi = self.spacing_range
+        if gap is not None:
+            lo = min(max(lo, self._min_spacing_for(gap)), hi)
+        return random.uniform(lo, hi)
+
+    # ------------------------------------------------------------------
+    # 真实状态向量（诊断用，训练主管线不走这条路）
+    # ------------------------------------------------------------------
+    def state_vector(self):
+        """把游戏的真实内部状态压成 8 维向量，各分量大致归一到 [-1,1]。
+
+        这**不是**给主管线用的 —— 主管线的全部意义就是从像素学。
+        它的用途是做一个"感知上界"对照：如果一个只有几万参数的 MLP
+        拿着完美状态也过不了 N 根管道，那说明瓶颈在控制/物理，
+        再怎么改网络和分辨率都没用；反之则说明瓶颈在感知。
+
+        含**下两根**管道，因为 CNN 在 80x80 的画面里原则上也能同时看到两根，
+        对照才公平。
+        """
+        nxt = []
+        for u in self.upperPipes:
+            if u['x'] + PIPE_WIDTH > self.playerx:
+                nxt.append(u)
+            if len(nxt) == 2:
+                break
+        while len(nxt) < 2:                      # 屏幕上不足两根时补一个远处的哨兵
+            nxt.append({'x': SCREENWIDTH * 2.0,
+                        'y': BASEY / 2 - PIPE_HEIGHT,
+                        'gap': float(self.pipe_gap)})
+
+        v = [self.playery / BASEY * 2.0 - 1.0,
+             self.playerVelY / self.playerMaxVelY]
+        for u in nxt:
+            gap_center = u['y'] + PIPE_HEIGHT + u['gap'] / 2.0
+            v += [(u['x'] - self.playerx) / SCREENWIDTH,
+                  gap_center / BASEY * 2.0 - 1.0,
+                  u['gap'] / 200.0]
+        return np.asarray(v, dtype=np.float32)
 
     # ------------------------------------------------------------------
     # 势能函数（只暴露 Φ，差分由调用方在决策级计算）
@@ -272,7 +520,7 @@ class FlappyEnv:
     def current_potential(self):
         """Φ(s) ∈ [-1, 0]，无量纲。终止态的 Φ 按定义取 0，由调用方处理。
 
-        与旧实现（wrapped_flappy_bird_fast.py:177-213）的两点差异：
+        与旧实现的两点差异：
         - 缩放用 SCREENHEIGHT 而非硬编码的 /100.0，使其有界且无量纲
         - "下一根管道"用尾缘 (x + PIPE_WIDTH > playerx) 判定而非中心，
           避免鸟还在缝隙里时势能就跳到远处的下一根管道
@@ -285,7 +533,8 @@ class FlappyEnv:
         if nxt is None:
             return 0.0
 
-        gap_center = nxt['y'] + PIPE_HEIGHT + self.pipe_gap / 2.0
+        # 缝隙大小逐根变化，所以必须读这根管道自己的 gap，不能读 self.pipe_gap
+        gap_center = nxt['y'] + PIPE_HEIGHT + nxt['gap'] / 2.0
         d = abs(self.playery + PLAYER_HEIGHT / 2.0 - gap_center) / SCREENHEIGHT
         return -float(d)
 
@@ -301,9 +550,8 @@ class FlappyEnv:
         SCREEN.blit(IMAGES['player'][self.playerIndex],
                     (self.playerx, self.playery))
 
-    @staticmethod
-    def _observe():
-        """把当前画面变成 (80,80) uint8 的 {0,255} 二值图。
+    def _observe(self):
+        """把当前画面变成 (obs_w, obs_h) uint8 的 {0,255} 二值图。
 
         为什么不用 pygame.surfarray.array3d
         ---------------------------------
@@ -321,7 +569,10 @@ class FlappyEnv:
         # 不调用 display.update()：headless 下没有意义，纯属开销
         view = pygame.surfarray.pixels3d(SCREEN)
         try:
-            small = cv2.resize(view[:, :, 0], (OBS_SIZE, OBS_SIZE),
+            # view[:,:,0] 是 (288, 512) = (屏幕宽, 屏幕高)。
+            # cv2 的 dsize 是 (cols, rows)，这里 cols 对应屏幕高、rows 对应屏幕宽，
+            # 所以要写成 (obs_h, obs_w)，得到的数组形状是 (obs_w, obs_h)。
+            small = cv2.resize(view[:, :, 0], (self.obs_h, self.obs_w),
                                interpolation=cv2.INTER_AREA)
         finally:
             del view                      # 解锁 Surface，务必执行
@@ -331,7 +582,7 @@ class FlappyEnv:
     def raw_obs():
         """原始彩色帧 (288,512,3) uint8，width-major（转置的）。
 
-        只给 play_flappy.py 的可视化用 —— 训练路径不该调用它（它就是那次
+        只给 play.py 的可视化用 —— 训练路径不该调用它（它就是那次
         762us 的大拷贝）。转成给 cv2 显示的常规 BGR 图：
             np.transpose(raw, (1, 0, 2))[:, :, ::-1]
         """
