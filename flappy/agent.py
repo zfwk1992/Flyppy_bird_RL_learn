@@ -28,6 +28,8 @@ class Agent:
 
         self.grad_steps = 0
         self.syncs = 0
+        # n-step 的自举折扣：y = R_n + gamma^n * Q(s_{t+n})
+        self.gamma_n = cfg['gamma'] ** cfg['n_step']
         assert_deterministic(self.online, cfg, device)
 
     # ------------------------------------------------------------------
@@ -70,11 +72,13 @@ class Agent:
 
         q_sa = self.online(s).gather(1, a.unsqueeze(1))
 
-        # Double DQN：在线网络选动作，目标网络打分
+        # Double DQN：在线网络选动作，目标网络打分。
+        # n-step 时 r 已经是 n 步折扣累加，所以自举项的折扣必须是 gamma^n
+        # —— 写成 gamma 会让远处的价值被高估 n 倍量级，是 n-step 最常见的错。
         with torch.no_grad():
             a_star = self.online(s1).argmax(1, keepdim=True)
             q_next = self.target(s1).gather(1, a_star)
-            y = r.unsqueeze(1) + cfg['gamma'] * q_next * (~d).unsqueeze(1)
+            y = r.unsqueeze(1) + self.gamma_n * q_next * (~d).unsqueeze(1)
 
         loss = F.smooth_l1_loss(q_sa, y)
 

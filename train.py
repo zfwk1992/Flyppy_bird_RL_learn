@@ -1,4 +1,4 @@
-"""训练入口：Flappy Bird Dueling Double-DQN。
+﻿"""训练入口：Flappy Bird Dueling Double-DQN。
 
     python train.py                      # 完整训练
     python train.py --smoke              # 几分钟的管线自检
@@ -27,7 +27,7 @@ from flappy import checkpoint
 from flappy.agent import Agent
 from flappy.config import resolve_config
 from flappy.csvlog import RunLogger
-from flappy.replay import ReplayBuffer
+from flappy.replay import NStepAccumulator, ReplayBuffer
 from flappy.rollout import (FrameStack, epsilon_at, evaluate, make_env,
                             skip_step)
 
@@ -83,9 +83,10 @@ def train(cfg, args):
             "the exploration schedule is whatever this run's config says.")
 
     buffer = ReplayBuffer(cfg['buffer_capacity'], cfg['frame_stack'],
-                          cfg['obs_w'], cfg['obs_h'])
-    say("replay capacity=%d (%.2f GB allocated)"
-        % (cfg['buffer_capacity'], buffer.nbytes() / 1e9))
+                          cfg['obs_w'], cfg['obs_h'], n_step=cfg['n_step'])
+    nstep = NStepAccumulator(cfg['n_step'], cfg['gamma'])
+    say("replay capacity=%d (%.2f GB allocated), n_step=%d"
+        % (cfg['buffer_capacity'], buffer.nbytes() / 1e9, cfg['n_step']))
 
     env = make_env(cfg)
     # 评测用独立的环境实例：共用会让训练回合的状态被评测冲掉
@@ -129,7 +130,9 @@ def train(cfg, args):
         action = agent.act_epsilon_greedy(stack, eps)
 
         next_frame, r_dec, done, info, phi = skip_step(env, action, phi, cfg)
-        buffer.add(stack, action, r_dec, next_frame, done)
+        # n-step：攒够 n 步（或回合结束）才产出经验。n_step=1 时等价于直接 add。
+        for tr in nstep.push(stack, action, r_dec, next_frame, done):
+            buffer.add(*tr)
 
         decision_step += 1
         ep_dec += 1
@@ -225,7 +228,8 @@ def train(cfg, args):
                 resume_slot ^= 1
                 last_resume_t = time.time()
 
-            # ---- 重置帧栈：杜绝跨局拼接 ----
+            # ---- 重置帧栈和 n-step 累加器：杜绝跨局拼接 ----
+            nstep.reset()
             stack = stacker.reset(env.reset())
             phi = env.current_potential()
             ep_return = 0.0
@@ -294,6 +298,10 @@ def main():
                    help='observation pixels along the screen HEIGHT (default 128)')
     p.add_argument('--obs-w', type=int, default=None,
                    help='observation pixels along the screen WIDTH (default 80)')
+    p.add_argument('--n-step', type=int, default=None,
+                   help='n-step returns (default 3, 1 = plain one-step TD). '
+                        'Capped at frame_stack: beyond that s_t and s_t+n share '
+                        'no frames and the compressed replay layout breaks.')
     p.add_argument('--warmup', type=int, default=None,
                    help='decisions to collect before learning starts. The default '
                         '20000 fills the buffer from scratch; when resuming you can '
@@ -317,6 +325,7 @@ def main():
                          fc_hidden=args.fc_hidden,
                          obs_h=args.obs_h,
                          obs_w=args.obs_w,
+                         n_step=args.n_step,
                          warmup_decisions=args.warmup,
                          eps_anneal1_decisions=args.anneal1,
                          eps_anneal2_decisions=args.anneal2)

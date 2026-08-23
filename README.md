@@ -1,18 +1,24 @@
-# Flappy Bird — Dueling Double-DQN
+﻿# Flappy Bird — Dueling Double-DQN
 
-用像素画面训练一个会玩 Flappy Bird 的智能体。输入是 4 帧 80×80 的二值画面，
+用像素画面训练一个会玩 Flappy Bird 的智能体。输入是 4 帧 80×128 的二值画面，
 输出是两个动作（扇翅 / 不动）的 Q 值，没有任何手工特征。
 
 **这个仓库的主要目的是学 RL 和神经网络** —— 代码里每个设计选择都写了理由，
-配套 [12 篇教学文档](docs/learn/README.md) 和 11 个"每个都对应一个真实 bug"的单测。
+配套 [12 篇教学文档](docs/learn/README.md)、12 个"每个都对应一个真实 bug"的单测，
+以及一份[含失败实验的完整记录](docs/EXPERIMENTS.md)。
 
-实测（RTX 3070 Laptop，训练约 70 分钟到 ε=0.01，100 局纯贪婪评测）：
+## 当前基线
+
+`runs/final_v1/best.pt` —— 1,258,659 参数，RTX 3070 Laptop 训练 4.5 小时。
+**100 局纯贪婪评测（ε=0，单局上限 4000 决策）**：
 
 | 评测环境 | 过管道数 |
 |---|---|
-| 随机化布局（训练分布，缝隙 80–165px 逐根变） | **56.8**（中位 39，最高 286）|
-| 固定布局 gap 100（**从没训练过**） | **239.6**（29% 跑满 3000 决策上限）|
-| 人类玩家（同一随机化环境，20 局） | 6.8 |
+| **训练分布**（随机化，缝隙 85–165px 逐根变） | **78.2**（中位 46.5，最高 482）|
+| 固定布局 gap 100（**从没训练过**） | 48.6 |
+| 旧分布 gap 70–165（**从没训练过**） | 25.7 |
+| gap 70–85（**从没训练过**，接近物理极限） | 4.9 |
+| 人类玩家（随机化环境，20 局） | 6.8 |
 | 随机策略 | 0.63 |
 
 作为对照，重写前的管线跑了 10 万局 / 13 小时，停在 **1.3 根** ——
@@ -22,8 +28,14 @@
 换到随机布局只剩 2.4 根 ——
 见[两模型 × 五环境的完整泛化矩阵](docs/learn/11-generalization.md)。
 
+> **训练分布的下界是 85px 不是更小**，这是实验定的：小鸟高 24px，而它能维持的
+> 最小竖直振荡是 22.5px，所以 70px 缝隙只剩 23.5px 容错。死亡归因显示
+> 70–80px 只占 10.5% 的管道却贡献 **53.5%** 的死亡。那是物理墙，不是学习问题。
+> 代价是模型在含窄缝的旧分布上只有 25.7 —— 反而不如专门在那里训练的模型（30.8）。
+> 详见 [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md)。
+
 ```
-                 ┌──────────────┐   80×80 二值帧    ┌──────────────┐
+                 ┌──────────────┐  80×128 二值帧   ┌──────────────┐
    4 帧一动 ───▶ │  FlappyEnv   │ ─────────────────▶│  DuelingDQN  │
                  │  (pygame)    │◀───── 动作 ───────│  1.26M 参数  │
                  └──────────────┘                   └──────────────┘
@@ -32,7 +44,7 @@
                         ▼                                   │ + Huber
                  ┌──────────────┐    均匀采样 128    ┌───────────────┐
                  │ ReplayBuffer │ ─────────────────▶│    目标网络   │
-                 │ uint8 · 40 万│                   │ 每 1000 梯度步│
+                 │ uint8 · 15 万│                   │ 每 1000 梯度步│
                  └──────────────┘                   └───────────────┘
 ```
 
@@ -46,7 +58,7 @@
 .\setup.ps1
 ```
 
-它会自动检测 GPU、建 `.venv`、装对版本的 PyTorch、装依赖，最后跑 11 个单测确认能用。
+它会自动检测 GPU、建 `.venv`、装对版本的 PyTorch、装依赖，最后跑 12 个单测确认能用。
 
 国内网络建议 `.\setup.ps1 -Mirror`（阿里云 + 清华镜像），省得先失败一轮。
 只想跑单测/看回放/画图用 `.\setup.ps1 -Cpu`。
@@ -70,7 +82,7 @@ python -m venv .venv
 ### 然后
 
 ```bash
-# 先确认管线是好的（11 个单测，约 30 秒）
+# 先确认管线是好的（12 个单测，约 40 秒）
 python test/test_env_and_buffer.py
 
 # 3. 训练（需要 CUDA；资源需求见下方"硬件与资源"）
@@ -87,8 +99,8 @@ python play.py runs/<时间戳>/best.pt --fps 30 --scale 2
 python plot.py runs/<时间戳>
 ```
 
-> 内存不够就调小缓冲区：默认 `buffer_capacity=400000` 需要约 12.8GB 常驻内存，
-> 16GB 的机器上要 `python train.py --buffer 120000`（约 3.8GB）。
+> 内存不够就调小缓冲区：默认 `buffer_capacity=150000` 在 80×128 观测下需要约 7.2GB 常驻内存，
+> 16GB 的机器上用 `python train.py --buffer 60000`（约 3.1GB）。
 
 自己上手玩一局（不需要存档，按住空格扇翅）：
 
@@ -122,15 +134,24 @@ game/               环境侧
   flappy_bird_utils.py  资源加载
 
 test/
-  test_env_and_buffer.py  10 个单测，每个对应一个真实存在过的 bug
+  test_env_and_buffer.py  12 个单测，每个对应一个真实存在过的 bug
 
-docs/learn/           教学文档：11 篇，从 RL 基础讲到诊断
+docs/learn/           教学文档：13 篇，从 RL 基础讲到网络选型
+docs/EXPERIMENTS.md   实验记录：试过什么、结果如何、哪些失败了
 docs/ARCHITECTURE.md  架构说明：数据流、模块依赖、计数器、加东西该往哪放
-docs/legacy/          旧管线的文档存档（内容已过时，见文末）
+
+models/
+  final_v1_best.pt      当前基线模型（4.8MB，唯一进版本控制的权重）
+  final_v1_config.json  它的训练配置
+
+experiments/
+  state_mlp.py          诊断实验：喂真实状态向量的小 MLP，用来分清
+                        瓶颈在感知还是在控制（见 docs/learn/12）
 ```
 
-- **想学 RL 和神经网络** → [docs/learn/](docs/learn/README.md)（11 篇教学文档）
+- **想学 RL 和神经网络** → [docs/learn/](docs/learn/README.md)（13 篇教学文档）
 - **想看代码怎么组织** → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- **想知道试过哪些东西、结果如何** → [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md)（含失败的实验和未完成的坑）
 
 下面这一节讲的是"为什么这么选"。
 
@@ -219,7 +240,7 @@ docs/legacy/          旧管线的文档存档（内容已过时，见文末）
 | 项 | 默认 | 说明 |
 |----|------|------|
 | `randomize_pipes` | True | 域随机化：缝隙大小/位置/间距**逐根**采样，同一局内地图也在变。关掉会让网络只学到一套窄策略（[实测差 104 倍](docs/learn/11-generalization.md)）|
-| `pipe_gap_range` | (80, 165) | 随机化时的缝隙大小 |
+| `pipe_gap_range` | (85, 165) | 随机化时的缝隙大小。下界 85 是实验定的，见 config.py 注释 |
 | `pipe_spacing_range` | (115, 200) | 随机化时的水平间距（原来恒为 144）|
 | `pipe_max_delta_frac` | 0.6 | 相邻缝隙落差上限 / 间距，保证物理可达 |
 | `pipe_gap` | 100 | `randomize_pipes=False` 时的固定缝隙。100 = 原版，150 = 放宽 |
@@ -231,7 +252,7 @@ docs/legacy/          旧管线的文档存档（内容已过时，见文末）
 | `warmup_decisions` | 20,000 | 纯随机填缓冲区，期间不学习 |
 | `train_every_decisions` | 4 | 配 batch 128 = 每次决策 32 个样本的学习量（标准回放比） |
 | `target_sync_grad_steps` | 1,000 | 数梯度步 |
-| `buffer_capacity` | 400,000 | uint8 存储约 12.8GB 常驻内存 |
+| `buffer_capacity` | 150,000 | 80×128 观测下约 7.2GB 常驻内存。16GB 机器用 `--buffer 60000`（3.1GB）|
 | `eps` | 1.0 → 0.05 → 0.01 | 两段线性退火，只依赖 `decision_step` 一个计数器 |
 
 命令行：`--pipe-gap` `--no-randomize` `--buffer` `--episodes` `--seed` `--max-hours`
@@ -320,7 +341,7 @@ pytest test/test_env_and_buffer.py -v    # 或用 pytest
 | 资源 | 需求 |
 |---|---|
 | 显存 | 约 800 MB（网络才 5 MB，其余是 CUDA context）|
-| **内存** | 默认 `buffer_capacity=400000` 要 **11.9 GB 常驻**。16 GB 的机器用 `--buffer 100000`（约 3.2 GB）|
+| **内存** | 默认 `buffer_capacity=150000` 在 80×128 观测下要 **7.2 GB 常驻**。16 GB 的机器用 `--buffer 60000`（约 3.1 GB）|
 | 磁盘 | 安装约 6 GB；每轮训练的 `runs/` 目录约 50 MB |
 | 实测速度 | RTX 3070 Laptop：约 220 决策/秒、55 梯度步/秒，GPU 利用率 30% |
 
@@ -334,12 +355,25 @@ GPU 利用率只有 30% 是正常的 —— 网络太小，瓶颈在 CPU 侧的 
 
 ---
 
-## docs/legacy/
+## 旧管线去哪了
 
-`docs/legacy/` 是旧管线的文档存档。**内容已经过时**：它们描述的是
-`deep_Q_oneStep.py` / `deep_Q_dueling_DQN.py` / `continue_training.py`
-那套实现，以及"智能目标网络选择""预训练模型继续训练"等已废弃的机制。
-那套管线跑了 4 轮、最长 10 万局 / 13 小时，近百局均分始终停在约 1.3 根管道。
+旧实现（`deep_Q_oneStep.py` / `deep_Q_dueling_DQN.py` / `continue_training.py`）
+和它的 22 篇文档都已删除。那套管线跑了 4 轮、最长 10 万局 / 13 小时，
+近百局均分始终停在约 1.3 根管道。
 
-保留它们是因为其中的推导和调试记录仍有参考价值，但**不要**照着它们改代码。
-旧代码本身已删除，可在 git 历史中查阅（`git log --diff-filter=D --name-only`）。
+**文档删掉是因为它们会误导人**，不只是过时：其中一篇教"怎么修好 BatchNorm 的
+报错"，而本项目的核心结论是 BatchNorm 根本不能出现在网络里（目标网络处于
+train 模式时 Bellman 算子没有不动点）；另一篇在推荐 Dropout 做正则化，
+而那正是让"贪婪"动作变成随机动作的元凶。
+
+要查的话都在 git 历史里：
+
+```bash
+git log --diff-filter=D --name-only     # 看哪些文件被删过
+git show <commit>:docs/legacy/xxx.md    # 取出某个旧文档
+git show 9b67f03:continue_training.py   # 取出旧代码
+```
+
+那套管线**具体错在哪、每处错误怎么验证的**，写在
+[00 · 为什么之前不收敛](docs/learn/00-why-it-failed.md) —— 那是对着 git 里的
+旧代码逐行核对过的版本，比旧文档自己的说法可靠。

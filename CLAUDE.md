@@ -66,8 +66,16 @@ python train.py --smoke --allow-cpu    # 管线自检
 每个单测都对应一个真实存在过的 bug。测试挂了先看是不是把旧缺陷改回来了，
 不要直接改断言。
 
-## docs/legacy/
+## 旧管线
 
-旧管线（`deep_Q_oneStep.py` / `deep_Q_dueling_DQN.py` / `continue_training.py`）
-的文档存档，**内容已过时**，其中的"智能目标网络选择""预训练模型继续训练"
-等机制均已废弃。不要照着它们改代码。旧代码已删除，见 git 历史。
+旧代码和 `docs/legacy/` 的 22 篇文档都已删除 —— 那些文档不只是过时，
+是会误导人（有一篇教怎么"修好" BatchNorm 报错，而正确答案是根本不该用它）。
+要查就去 git 历史。旧管线错在哪，看
+[00 · 为什么之前不收敛](docs/learn/00-why-it-failed.md)，那是逐行核对过的版本。
+
+## 实验记录
+
+改超参数、换架构之前先看 [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) ——
+里面记着试过什么、哪些失败了、以及失败原因查到哪一步。
+`flappy/config.py` 里每个非显然的默认值都在注释里写了实验依据，
+改之前先读那段注释。

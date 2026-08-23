@@ -646,6 +646,91 @@ def test_pipe_randomization():
 
 
 # ======================================================================
+# 11. n-step：回报累加正确、s_{t+n} 重建正确、绝不跨回合
+# ======================================================================
+def test_n_step_returns():
+    """n-step 有两个**必须**同时正确、否则会静默学歪的地方。
+
+    (a) **回报**：R_n = r_t + γr_{t+1} + ... + γ^{n-1}r_{t+n-1}，
+        回合中途结束时要截断，且剩下的前缀都得吐出来 ——
+        否则每个回合末尾的 n-1 条经验会丢失，而那些恰恰包含死亡信息。
+
+    (b) **s_{t+n} 的重建**：1-step 的 next_state = concat(next_frame, s[:3])
+        在 n-step 下**不成立**。s_t 与 s_{t+n} 只重叠 stack-n 帧：
+
+            s_t     = [f_t,   f_t-1, f_t-2, f_t-3]
+            s_{t+3} = [f_t+3, f_t+2, f_t+1, f_t  ]
+
+        照搬 1-step 的写法会让网络拿 s_{t+1} 当 s_{t+n}，
+        而奖励是 n 步累加的 —— 状态和目标错位，loss 照样下降，分数上不去。
+    """
+    from flappy.replay import NStepAccumulator, ReplayBuffer
+
+    STACK, N, GAMMA = 4, 3, 0.9
+    H, W = 8, 12                       # 小尺寸，便于逐帧核对
+    acc = NStepAccumulator(N, GAMMA)
+    buf = ReplayBuffer(capacity=200, stack=STACK, h=H, w=W, n_step=N)
+
+    def frame(tag):                    # 用填充值编码帧的身份
+        return np.full((H, W), tag, dtype=np.uint8)
+
+    def stack_of(t):                   # 时刻 t 的帧栈：新帧在前
+        return np.stack([frame((t - i) % 256) for i in range(STACK)])
+
+    # ---- (a) 回报累加 + 截断 ----
+    acc.reset()
+    rewards = [1.0, 2.0, 4.0, 8.0, 16.0]
+    outs = []
+    for t, r in enumerate(rewards):
+        done = (t == len(rewards) - 1)
+        outs += acc.push(stack_of(t + STACK), t % 2, r, frame(t + STACK + 1), done)
+
+    # 5 步、n=3：应当产出 5 条（前 3 条是完整 n-step，末尾 2 条被截断）
+    assert len(outs) == 5, f"应产出 5 条经验，实得 {len(outs)}"
+    for i, (_, _, R, _, dn) in enumerate(outs):
+        span = min(N, len(rewards) - i)
+        want = sum((GAMMA ** k) * rewards[i + k] for k in range(span))
+        assert abs(R - want) < 1e-9, \
+            f"第 {i} 条 n-step 回报 {R} != {want}"
+        # 只有窗口覆盖到最后一步的那些才该是 done
+        assert dn == (i + span == len(rewards)), \
+            f"第 {i} 条 done={dn} 不对"
+
+    # ---- (b) s_{t+n} 的重建 ----
+    buf_state = stack_of(10)                      # [10, 9, 8, 7]
+    nf = np.stack([frame(11), frame(12), frame(13)])   # 时间正序
+    buf.add(buf_state, 1, 0.5, nf, False)
+    s, a, r, s1, d = buf.sample(1)
+
+    want_s1 = np.stack([frame(13), frame(12), frame(11), frame(10)])
+    assert np.array_equal(s1[0], want_s1), (
+        "s_{t+n} 重建错误\n实得首帧值 %s\n期望 %s"
+        % (s1[0][:, 0, 0], want_s1[:, 0, 0]))
+    # 1-step 的错误写法会得到 [11, 10, 9, 8]，这里必须区分开
+    wrong = np.stack([frame(11), frame(10), frame(9), frame(8)])
+    assert not np.array_equal(s1[0], wrong), "退化成了 1-step 的重建"
+
+    # ---- 跨回合污染 ----
+    acc.reset()
+    acc.push(stack_of(100), 0, 1.0, frame(101), False)
+    acc.reset()                                    # 新回合
+    out2 = acc.push(stack_of(200), 0, 1.0, frame(201), True)
+    assert len(out2) == 1 and abs(out2[0][2] - 1.0) < 1e-9, \
+        "reset() 之后仍混入了上一回合的奖励"
+
+    # n_step > stack 必须被拒绝（重叠帧不够，压缩存储不成立）
+    try:
+        ReplayBuffer(capacity=10, stack=4, h=H, w=W, n_step=5)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("n_step > stack 时应当报错")
+
+    print(f"  [11] OK  n={N} returns exact (5 transitions incl. truncated tail), "
+          f"s_t+n rebuilt correctly, no cross-episode leak, n>stack rejected")
+
+
+# ======================================================================
 def _run_all():
     tests = [
         test_reward_accumulation_and_telescoping,
@@ -659,6 +744,7 @@ def _run_all():
         test_observation_matches_legacy_pipeline,
         test_pipe_gap_is_configurable,
         test_pipe_randomization,
+        test_n_step_returns,
     ]
     print(f"running {len(tests)} env tests...")
     for fn in tests:

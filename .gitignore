@@ -15,6 +15,10 @@ env/
 runs/
 *.pth
 *.pt
+# 例外：models/ 下只放"当前基线"那一个存档，跟着代码一起版本化。
+# 4.8MB 二进制，进了 git 历史就很难移除 —— 所以这里只开这一个口子，
+# 不要把 runs/ 里的中间存档也塞进来。
+!models/*.pt
 
 # 后台训练的 stdout/stderr 重定向（runs_mlp60.log / runs_mlp80.err 这类）
 *.log
