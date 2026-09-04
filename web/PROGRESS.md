@@ -11,7 +11,7 @@
 
 - [ ] **阶段 1　游戏本体**
   - [x] `web/game.js`：物理与管道生成，逐条对照 `game/flappy_env.py`
-  - [ ] 种子化 PRNG（两只鸟必须共用同一组管道）
+  - [x] 种子化 PRNG（两只鸟必须共用同一组管道）
   - [ ] Canvas 渲染：管道 / 小鸟 / 地面，黑底
   - [ ] 键盘 + 触摸控制，一键重开
   - [ ] **验收**：`web/tools/parity_game.md` 里记录同种子下 JS 与 Python 的管道序列比对结果
@@ -53,5 +53,23 @@
   最高 23 根，量级合理）、参数校验的异常路径能正确抛错。
   下一步：种子化 PRNG（两只鸟必须共用同一组管道），做完之后才能补
   `web/tools/parity_game.md` 里的 Python/JS 管道序列比对。
+
+- 2026-09-04：加了 `createSeededRng(seed)`（mulberry32，`web/game.js`），
+  `FlappyGame` 构造函数新增 `seed` 参数（未显式传 `rng` 时生效，`rng` 优先级
+  更高）。两只鸟各自用相同的整数 seed 构造实例（各自独立的生成器对象，
+  不是共享同一个生成器）就能拿到逐帧相同的管道序列 —— 因为管道生成只依赖
+  帧数推进和内部状态（`_nextGap`/`_lastGapCenter`/`_lastSlack`），完全不依赖
+  玩家动作，所以两边只要 `step()` 调用次数同步，序列天然一致，不需要跨实例
+  共享随机源。新增 `web/tools/smoke_test_seed.mjs`（`node web/tools/smoke_test_seed.mjs`
+  跑），用一个"追缝隙中心"的简易启发式让两只鸟能撑到 176 帧，验证了：同 seed
+  两个独立实例、完全不同的动作序列下管道逐帧一致；不同 seed 产生不同管道
+  （排除 seed 参数被忽略的退化情况）；同一 seed 三次独立重放结果完全一致；
+  `createSeededRng` 本身确定性、值域 [0,1)、1000 采样里 999+ 个不同值，分布
+  正常。也验证了不传 seed 时默认 `Math.random` 行为不受影响（向后兼容）。
+  注意：这一步只解决"JS 内两只鸟共用同一组管道"，**没有**让 JS 的随机数
+  算法和 Python 的 `random` 模块（Mersenne Twister）比特对齐 —— 那是
+  `web/tools/parity_game.md`（阶段 1 的验收项）要做的事，目前还没做，
+  `web/tools/` 目录也还没有那个文件。
+  下一步：Canvas 渲染（管道 / 小鸟 / 地面，黑底）。
 
 （每次运行在这里追加一行：日期 + 做了什么 + 下一步）

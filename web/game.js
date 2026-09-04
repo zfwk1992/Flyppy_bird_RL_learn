@@ -6,9 +6,11 @@
  * 的回退值），本文件的默认参数对齐 CONFIG，而不是 flappy_env.py 的模块默认值。
  *
  * 本文件只负责"游戏是什么"（物理 + 管道生成 + 碰撞 + 计分），不负责渲染、
- * 不负责输入、不负责随机数的可复现性（种子化 PRNG 是下一步）。
- * 随机源通过构造函数的 `rng` 注入（默认 Math.random），种子化 PRNG
- * 接入时只需替换这个函数，不需要改动本文件的其他逻辑。
+ * 不负责输入。
+ * 随机源通过构造函数的 `rng` 注入（默认 Math.random），也可以只传整数
+ * `seed`，内部会用下方的 `createSeededRng` 构造确定性随机源 —— 这是
+ * "两只鸟共用同一组管道"的机制：给两个实例传相同的 seed 即可，见
+ * `createSeededRng` 的注释。
  *
  * 坐标系与 Python 完全一致：screen 288x512，(x,y) 原点在左上角，
  * y 向下为正。BASE_Y（地面线）是浮点数，不取整，逐位对照
@@ -65,6 +67,30 @@ function pymod(a, b) {
   return ((a % b) + b) % b;
 }
 
+/**
+ * 32 位可复现 PRNG（mulberry32），签名与 Math.random 兼容：调用一次前进一步，
+ * 返回 [0,1)。同一个 seed 永远产出同一条序列 —— 这是"两只鸟必须共用同一组
+ * 管道"的基础：给两个 FlappyGame 各自传 `{ seed: sameValue }`（或各自传
+ * `createSeededRng(sameValue)`），两边各自拿到独立但序列相同的生成器。
+ * 管道生成完全不依赖玩家动作，只依赖帧数推进和已生成的内部状态
+ * （`_nextGap` / `_lastGapCenter` / `_lastSlack`，全部由随机数派生），
+ * 所以只要两只鸟的 step() 调用次数同步，管道序列就会逐位相同 ——
+ * 不需要两只鸟共享同一个生成器实例，各自独立即可。
+ *
+ * 算法：https://github.com/bryc/code/blob/master/jshash/PRNGs.md#mulberry32
+ * 不追求密码学强度，只追求「确定性 + [0,1) 均匀分布」，对游戏采样够用。
+ */
+export function createSeededRng(seed) {
+  let s = seed >>> 0;
+  return function () {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t = (t + Math.imul(t ^ (t >>> 7), t | 61)) | 0;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 /** itertools.cycle(arr) 的等价物：每次调用推进一格，循环取值。 */
 function makeCycle(arr) {
   let i = -1;
@@ -119,8 +145,11 @@ export class FlappyGame {
    * @param {number} [opts.pipeReward=PIPE_REWARD]
    * @param {number} [opts.deathReward=DEATH_REWARD]
    * @param {number} [opts.aliveReward=ALIVE_REWARD]
-   * @param {() => number} [opts.rng=Math.random] 返回 [0,1) 的随机源；
-   *   种子化 PRNG 接入时只需替换这个函数。
+   * @param {() => number} [opts.rng=Math.random] 返回 [0,1) 的随机源。
+   *   显式传入时优先于 `seed`。
+   * @param {number|null} [opts.seed=null] 传入整数时，内部用
+   *   `createSeededRng(seed)` 构造确定性随机源（`rng` 未显式给出时才生效）。
+   *   两只鸟各自用相同的 seed 构造实例，即可共用同一组管道序列。
    * @param {object|null} [opts.hitmasks=null]
    *   { player: [mask0, mask1, mask2], pipeUpper: mask, pipeLower: mask }
    *   缺省时碰撞退化为包围盒判定（见 pixelCollision）。
@@ -136,7 +165,8 @@ export class FlappyGame {
       pipeReward = PIPE_REWARD,
       deathReward = DEATH_REWARD,
       aliveReward = ALIVE_REWARD,
-      rng = Math.random,
+      rng = null,
+      seed = null,
       hitmasks = null,
     } = opts;
 
@@ -169,7 +199,7 @@ export class FlappyGame {
       }
     }
 
-    this._rng = rng;
+    this._rng = rng || (seed !== null ? createSeededRng(seed) : Math.random);
     this.hitmasks = hitmasks;
 
     this._done = true; // 强制先 reset()
