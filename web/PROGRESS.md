@@ -5,10 +5,8 @@
 
 ## 当前阶段
 
-**阶段 1、阶段 2、阶段 3：全部完成。** 左右分屏的对战页面（`web/index.html`）
-已经能跑：玩家一边、AI 一边、同一个 seed、AI 全程不停，页面下方有六段英文讲解，
-移动端布局已验证。下一步是**阶段 4：发布**（Cloudflare Pages 配置 / OG 卡片图 /
-LinkedIn 帖子草稿）。
+**阶段 1、阶段 2、阶段 3：全部完成。** 阶段 4 做了两项（Cloudflare Pages 配置、
+OG 卡片图），**只剩 LinkedIn 帖子草稿**。做完那一项，整个 plan.md 就全部完成了。
 
 ## 阶段清单
 
@@ -39,8 +37,12 @@ LinkedIn 帖子草稿）。
   - [x] 移动端布局：320/390px 视口下用 headless Chromium 截图 + 实际点击/触摸
         模拟验证过，两屏保持并排不堆叠，讲解区文字不溢出，控制台无报错
 - [ ] **阶段 4　发布**
-  - [ ] Cloudflare Pages 配置
-  - [ ] OG 卡片图
+  - [x] Cloudflare Pages 配置：`web/_headers`（缓存策略）+ `web/DEPLOY.md`
+        （dashboard 里要填的字段，重点是 build output directory 必须设成
+        `web`，否则会把 `flappy/`/`models/` 等无关的训练代码也发布出去）
+  - [x] OG 卡片图：`web/assets/og-card.jpg`（1200×630，78.5KB），源文件
+        `web/tools/og_card_source.html` + 渲染脚本
+        `web/tools/render_og_card.mjs`，`index.html` 已加 og:/twitter: 元标签
   - [ ] LinkedIn 帖子草稿
 
 ## 阻塞项
@@ -253,3 +255,28 @@ LinkedIn 帖子草稿）。
      输入为止；如果后续能在真机上跑一遍会更稳，但当前证据足以判定这一项完成。
 
   下一步：阶段 4——Cloudflare Pages 配置、OG 卡片图、LinkedIn 帖子草稿。
+
+- 2026-09-05（云端）：阶段 4 做了两项——Cloudflare Pages 配置和 OG 卡片图。
+
+  1. **Cloudflare Pages 配置**：新增 `web/_headers`（Pages 的响应头约定文件，
+     文件名不能改）——`/model/*` 和 `/assets/*` 给一天的强缓存，`/index.html`
+     和 `/` 不缓存以便随时改文案，外加两条基本安全头。另外写了
+     `web/DEPLOY.md`，记录 dashboard 里要手填的字段。**这里没有"配置文件
+     一键部署"这回事**——Cloudflare Pages 连 GitHub 仓库走的是网页向导，
+     没有等价于 `vercel.json` 的、提交进仓库就能生效的项目配置文件，所以
+     `DEPLOY.md` 是给操作的人看的清单，不是可执行配置。**最关键的一条**：
+     build output directory 必须设成 `web`，因为仓库根目录还有
+     `flappy/`/`models/`/`train.py` 这些和站点无关的训练代码，不隔离会被
+     一起发布出去。
+  2. **OG 卡片图**：`web/tools/og_card_source.html`（1200×630 的独立静态页，
+     不被 `index.html` 引用，只用来截图）+ `web/tools/render_og_card.mjs`
+     （headless Chromium 截图脚本，云端用 `/opt/node22/lib/node_modules/playwright`
+     的绝对路径导入，因为 ESM 的 bare specifier 解析不认 `NODE_PATH`，
+     云端也没有本地 npm 依赖）。产出 `web/assets/og-card.jpg`（78.5KB），
+     配色和站点一致（深色背景 + 淡化的管道剪影装饰），核心信息是
+     "78.2 vs 6.8" 的数字对比。`index.html` 的 `<head>` 加了 og:/twitter:
+     系列元标签，`og:image` 用相对路径——域名还没定（Cloudflare Pages 建好
+     项目才会分配 `*.pages.dev`），`DEPLOY.md` 里记了"部署后要用 LinkedIn
+     Post Inspector 验一遍相对路径能不能被正确解析，不行就换绝对 URL"。
+
+  下一步：阶段 4 最后一项——LinkedIn 帖子草稿。做完这个 plan.md 就全部完成了。
