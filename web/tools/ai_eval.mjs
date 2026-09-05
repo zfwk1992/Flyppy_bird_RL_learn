@@ -22,8 +22,17 @@ import { DuelingDQN, parseWeights } from '../nn.js';
 import { WEIGHTS_META } from '../model/weights-meta.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const N_EPISODES = Number(process.argv[2] || 30);
-const MAX_FRAMES = Number(process.argv[3] || 20000);
+const argv = process.argv.slice(2);
+const N_EPISODES = Number(argv[0] || 30);
+const MAX_FRAMES = Number(argv[1] || 20000);
+// 默认 seed 是 1000, 1001, ... 这种小连号，方便复现。
+// `--browser-seeds` 换成页面实际用的那种 32 位大随机数
+// （index.html: `(Date.now() ^ Math.random()*0x7fffffff) >>> 0`）——
+// mulberry32 对大 seed 的表现理论上没有区别，但"理论上"不算数，要测。
+const BROWSER_SEEDS = argv.includes('--browser-seeds');
+const seedFor = (ep) => (BROWSER_SEEDS
+  ? ((Date.now() + ep * 7919) ^ (Math.random() * 0x7fffffff)) >>> 0
+  : 1000 + ep);
 const FRAME_SKIP = 4;
 const FRAME_STACK = 4;
 
@@ -40,7 +49,8 @@ let totalDecisions = 0;
 const t0 = performance.now();
 
 for (let ep = 0; ep < N_EPISODES; ep++) {
-  const game = new FlappyGame({ seed: 1000 + ep, hitmasks: HITMASKS });
+  const seed = seedFor(ep);
+  const game = new FlappyGame({ seed, hitmasks: HITMASKS });
   game.reset();
   let action = 0;
   let i = 0;
@@ -55,7 +65,7 @@ for (let ep = 0; ep < N_EPISODES; ep++) {
     if (game.step(action).done) break;
   }
   scores.push(game.score);
-  process.stdout.write(`  第 ${String(ep + 1).padStart(2)} 局: ${String(game.score).padStart(4)} 根`
+  process.stdout.write(`  第 ${String(ep + 1).padStart(2)} 局 seed=${String(seed).padStart(10)}: ${String(game.score).padStart(4)} 根`
     + `  (${i} 帧${i >= MAX_FRAMES - 1 ? '，触顶截断' : ''})\n`);
 }
 

@@ -155,7 +155,7 @@
       </div>
       <div class="stats">
         <div><span>best</span><b id="youBest">0</b></div>
-        <div><span>attempts</span><b id="youTries">0</b></div>
+        <div><span>rounds</span><b id="youRounds">0</b></div>
       </div>
     </section>
 
@@ -167,7 +167,7 @@
       </div>
       <div class="stats">
         <div><span>best</span><b id="aiBest">0</b></div>
-        <div><span>crashes</span><b id="aiDeaths">0</b></div>
+        <div><span>outlasted you</span><b id="aiOutlasted">0/0</b></div>
       </div>
     </section>
   </div>
@@ -322,14 +322,17 @@ const $ = (id) => document.getElementById(id);
 
 // hitmasks 必须传：小鸟只有 72% 不透明，退化成包围盒会把擦边飞过误判成撞击。
 // 见 web/tools/parity_game.md。两边共用同一个 seed，所以管道序列相同。
-let seed = (Date.now() ^ (Math.random() * 0x7fffffff)) >>> 0;
-const opts = () => ({ seed, hitmasks: HITMASKS });
+const randomSeed = () => (Date.now() ^ (Math.random() * 0x7fffffff)) >>> 0;
+let seed = randomSeed();
 
 let you = null, aiGame = null;
 let youState = 'idle';          // idle | playing | dead
 let flapQueued = false;
 const best = { you: 0, ai: 0 };
-const count = { tries: 0, deaths: 0 };
+// rounds = 打完的局数；aiOutlasted = 其中"你先撞、AI 还在飞"的局数。
+// 锁步之后 AI 的当前分数必然约等于你的（同一组管道、同一帧），所以"谁分高"
+// 已经不是有意义的对照了 —— 有意义的是**每一局是不是你先掉下去**。
+const count = { rounds: 0, aiOutlasted: 0 };
 
 const [sprites, aiPlayer] = await Promise.all([loadSprites(), createAi()]);
 const youRender = new Renderer($('youCanvas').getContext('2d'), sprites);
@@ -337,91 +340,118 @@ const aiRender = new Renderer($('aiCanvas').getContext('2d'), sprites);
 $('boot').hidden = true;
 $('arena').hidden = false;
 
-function newYou() {
-  you = new FlappyGame(opts());
+/**
+ * 开新的一局：**两边同时**用同一个新 seed 重来，帧数都归零。
+ *
+ * 每局换 seed 是必须的，不是随手加的。AI 是确定性的（eval_epsilon=0，
+ * 网络里也没有 Dropout/BatchNorm），所以 seed 不变的话它每一局都会
+ * **一模一样地重放同一条轨迹、死在同一根管道上**。原来的版本整个会话共用
+ * 一个 seed，运气不好开局抽到一条早死的序列，就会看着它一遍遍死在第 12 根，
+ * 像是模型坏了 —— 其实只是同一局被放了很多遍。
+ */
+function newRound() {
+  seed = randomSeed();
+  you = new FlappyGame({ seed, hitmasks: HITMASKS });
   you.reset();
-  flapQueued = false;
-  $('youLive').textContent = '0';
-}
-
-function newAi() {
-  aiGame = new FlappyGame(opts());
+  aiGame = new FlappyGame({ seed, hitmasks: HITMASKS });
   aiGame.reset();
   aiPlayer.reset();
+  flapQueued = false;
+  $('youLive').textContent = '0';
   $('aiLive').textContent = '0';
 }
 
-function setYouState(s) {
+const IDLE_VEIL = '<b>Tap to fly</b><span>you and the AI start together</span>';
+
+function setYouState(s, summary) {
   youState = s;
   const veil = $('youVeil');
   if (s === 'playing') { veil.hidden = true; return; }
   veil.hidden = false;
-  veil.innerHTML = s === 'idle'
-    ? '<b>Tap to fly</b><span>space, click or tap</span>'
-    : `<b>${you.score} pipe${you.score === 1 ? '' : 's'}</b>`
-      + `<span>the AI is at ${aiGame.score} &mdash; tap to try again</span>`;
-  $('youTries').textContent = String(count.tries);
+  veil.innerHTML = summary || IDLE_VEIL;
+}
+
+/**
+ * 一局结束：**谁先撞都算这一局结束，两边同时重开。**
+ *
+ * 保持锁步是刻意的 —— 两只鸟必须始终停在同一根管道、同一帧上，
+ * 否则左右并排就不是对照，只是两个各飞各的画面。
+ */
+function endRound(who) {
+  const youScore = you.score;
+  const aiScore = aiGame.score;
+  const aiAlive = !aiGame.done;
+  count.rounds++;
+  if (youScore > best.you) best.you = youScore;
+  if (aiScore > best.ai) best.ai = aiScore;
+  if (who === 'you' && aiAlive) count.aiOutlasted++;
+  $('youBest').textContent = String(best.you);
+  $('youRounds').textContent = String(count.rounds);
+  $('aiBest').textContent = String(best.ai);
+  $('aiOutlasted').textContent = `${count.aiOutlasted}/${count.rounds}`;
+
+  const summary = who === 'you'
+    ? `<b>You crashed at ${youScore}</b>`
+      + '<span>the AI was still flying &mdash; tap for a fresh sequence</span>'
+    : `<b>The AI crashed at ${aiScore}</b>`
+      + `<span>you were at ${youScore} &mdash; tap for a fresh sequence</span>`;
+  newRound();                    // 立刻两边一起重置，不放 Game Over 动画
+  setYouState('dead', summary);
 }
 
 // 一次输入同时承担三件事：开始、扇翅、重开。死后**立刻**重开、不放 Game Over
 // 动画 —— plan.md 定了不削弱 AI，体验靠"秒重开"维持，任何停顿都会让人
 // 失去再试一次的欲望。
 function press() {
-  if (youState === 'idle') { count.tries++; setYouState('playing'); }
-  else if (youState === 'dead') { newYou(); count.tries++; setYouState('playing'); }
+  if (youState !== 'playing') setYouState('playing');
   flapQueued = true;
 }
 
 addEventListener('keydown', (e) => {
   if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); press(); }
-  else if (e.code === 'KeyR') { newYou(); count.tries++; setYouState('playing'); flapQueued = true; }
+  else if (e.code === 'KeyR') { newRound(); setYouState('playing'); flapQueued = true; }
 });
 // pointerdown 而不是 click：click 在移动端有约 300ms 延迟，游戏受不了
 $('youStage').addEventListener('pointerdown', (e) => { e.preventDefault(); press(); });
 
-$('reseed').addEventListener('click', () => {
-  seed = (Date.now() ^ (Math.random() * 0x7fffffff)) >>> 0;
-  newYou(); newAi(); setYouState('idle');
-});
+$('reseed').addEventListener('click', () => { newRound(); setYouState('idle'); });
 
 const STEP_MS = 1000 / 30;      // 与 play.py 的实时观看帧率一致
 let acc = 0;
 let last = performance.now();
 let perfAcc = 0, perfN = 0;
 
-function stepYou() {
-  const action = flapQueued ? 1 : 0;
-  flapQueued = false;
-  if (you.step(action).done) {
-    if (you.score > best.you) { best.you = you.score; $('youBest').textContent = String(best.you); }
-    setYouState('dead');
-  }
-  $('youLive').textContent = String(you.score);
-}
-
-function stepAi() {
+/** 推进一帧：两边**在同一次迭代里各走一步**，帧数因此永远相等。 */
+function stepBoth() {
   // decide() 必须在 step() 之前 —— 观测的是当前这一帧的画面，与训练时序一致
-  const action = aiPlayer.decide(aiGame);
+  const aiAction = aiPlayer.decide(aiGame);
   if (aiPlayer.lastMs) { perfAcc += aiPlayer.lastMs; perfN++; aiPlayer.lastMs = 0; }
-  if (aiGame.step(action).done) {
-    if (aiGame.score > best.ai) { best.ai = aiGame.score; $('aiBest').textContent = String(best.ai); }
-    count.deaths++;
-    $('aiDeaths').textContent = String(count.deaths);
-    newAi();
-    return;
-  }
+  const aiDone = aiGame.step(aiAction).done;
+
+  const youAction = flapQueued ? 1 : 0;
+  flapQueued = false;
+  const youDone = you.step(youAction).done;
+
+  $('youLive').textContent = String(you.score);
   $('aiLive').textContent = String(aiGame.score);
+  if (youDone || aiDone) endRound(youDone ? 'you' : 'ai');
+  return youDone || aiDone;
 }
 
 function tick(now) {
   const dt = now - last;
   last = now;
-  // 切后台回来时 dt 可能是几秒，别让物理一次性追补上百帧
-  acc = Math.min(acc + dt, STEP_MS * 4);
-  while (acc >= STEP_MS) {
-    acc -= STEP_MS;
-    stepAi();                       // AI 一直在飞，玩家死了也不停
-    if (youState === 'playing') stepYou();
+  if (youState === 'playing') {
+    // 切后台回来时 dt 可能是几秒，别让物理一次性追补上百帧
+    acc = Math.min(acc + dt, STEP_MS * 4);
+    while (acc >= STEP_MS) {
+      acc -= STEP_MS;
+      if (stepBoth()) break;        // 这一局结束了，剩下的追帧丢掉
+    }
+  } else {
+    // 没在玩就两边都不动。AI 不能在等待期间偷跑 —— 一旦它比玩家多走了几帧，
+    // 后面就不在同一根管道上了，左右对照立刻失效。
+    acc = 0;
   }
   youRender.draw(you.observeState());
   aiRender.draw(aiGame.observeState());
@@ -432,8 +462,7 @@ function tick(now) {
   requestAnimationFrame(tick);
 }
 
-newYou();
-newAi();
+newRound();
 setYouState('idle');
 requestAnimationFrame(tick);
 </script>
