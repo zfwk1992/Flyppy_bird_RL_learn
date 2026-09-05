@@ -39,7 +39,8 @@ one where an action got played.
 Results: 78.2 pipes cleared on average over 100 episodes in the Python
 training environment. I then ported the exact same weights to a
 hand-written, dependency-free JavaScript forward pass running in a browser —
-2.5 MB, 28ms per decision — and verified it bit-for-bit against the PyTorch
+no ONNX runtime, so the whole download is 2.5 MB of weights, 28ms per
+decision — and verified it bit-for-bit against the PyTorch
 model: 1,200 reconstructed frames pixel-identical, 300 sampled decisions
 action-for-action identical. In the browser it clears 86.4 pipes on average
 over 30 runs. Humans, in my own small sample: about 7.

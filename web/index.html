@@ -183,10 +183,10 @@
     <p>
       The AI never receives your coordinates, your height, or the pipe distance as
       numbers. Its only input is four stacked <code>80&times;128</code> black-and-white
-      frames &mdash; raw pixels, the same rendering pipeline that draws the canvas on
-      the right, just smaller and binary. No hand-engineered features: velocity, gap
-      position, everything it "knows" is inferred from how those four frames differ
-      from one another.
+      frames &mdash; raw pixels, built from the same sprites and geometry that draw
+      the canvas on the right, just smaller and binary. No hand-engineered features:
+      velocity, gap position, everything it "knows" is inferred from how those four
+      frames differ from one another.
     </p>
     <p>
       It commits to one of two actions &mdash; <em>flap</em> or <em>don't</em> &mdash;
@@ -260,9 +260,9 @@
     </div>
     <p>
       The browser version you're playing against loads exactly these weights
-      (<code>fp16</code>, 2.52&nbsp;MB) into a hand-written ~2.5&nbsp;MB JavaScript
-      forward pass &mdash; no ONNX runtime, no WASM blob. 28&nbsp;ms per decision,
-      against a 133&nbsp;ms budget.
+      into a hand-written JavaScript forward pass &mdash; no ONNX runtime, no WASM
+      blob, so the entire download is the weights themselves (<code>fp16</code>,
+      2.52&nbsp;MB). 28&nbsp;ms per decision, against a 133&nbsp;ms budget.
     </p>
 
     <h2><small>Does it actually match the Python model?</small>Verified, not assumed</h2>
@@ -299,8 +299,9 @@
         (a terminal-state flag silently dropped 75% of the time, a target network
         stuck in training mode, a reward scale that saturated the loss function).
         Not every n-step or epsilon variant tried afterward helped either &mdash;
-        <code>n_step=3</code> made no measurable difference, and lowering eval
-        epsilon to 0.01 dropped the score 6.2&times;. The write-ups for both the
+        <code>n_step=3</code> made no measurable difference, and leaving just 1%
+        random actions in at evaluation time (&epsilon;=0.01 instead of 0) dropped
+        the measured score 6.2&times;. The write-ups for both the
         failures and the fixes are in the repo.
       </p>
     </div>

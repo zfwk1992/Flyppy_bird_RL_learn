@@ -86,11 +86,41 @@ Cloudflare Pages 控制台的实际部署操作（agent 没有账号访问权限
   `web/assets/obs-sprites.js` 或 blit 顺序就会影响 AI，必须重跑 obs_check。
 - **页面不加载那个 .onnx**。推理用的是 `web/model/weights_fp16.bin` +
   手写前向（`web/nn.js`）。onnx 留着只是同一份权重的可验证副本，别去接它。
+- **验移动端布局用 `node web/tools/mobile_check.mjs`，不要用 `--window-size` 截图。**
+  `--window-size` 设的是窗口尺寸，不是移动端布局视口 —— `width=device-width`
+  不会按手机的方式生效，dpr 也还是 1，截出来的图会把一个**完全正常**的响应式
+  页面拍成"右边被裁掉"的样子。这个坑已经踩过一次，差点去修一个不存在的 bug。
+  `mobile_check.mjs` 走 CDP 的 `Emulation.setDeviceMetricsOverride`（`mobile:true`
+  + 真实 dpr），量的是 `scrollWidth` 和每个元素的 right 边界，**给可判定的结论**，
+  不用靠人眼看截图猜；顺带收集页面自身抛的 JS 错。零依赖，不需要 Playwright。
 - **界面是左右分屏**：玩家一屏、AI 一屏，同一个 seed 所以管道相同。
   玩家死了立刻用**同一个 seed** 重开，AI 全程不停 —— 差距就靠 AI 那个一直在涨的
   计数体现出来。这是刻意设计，不要改成"两边一起重开"。
 
 ## 变更日志
+
+- 2026-09-05（本机，复核云端阶段 3/4 的产出）：四条 parity + 浏览器自检全部重跑
+  通过，没有退化。改了三处**事实错误**的英文文案 —— 都是会被同行一眼看出来的：
+  1) "lowering eval epsilon to 0.01 dropped the score 6.2×" **方向反了**。
+     实测是 ε=0 得 389.6 根、ε=0.01 只得 63.1 根（`docs/learn/07-exploration.md`），
+     所以是**留着** 1% 随机才掉 6.2 倍，不是"降到 0.01"。
+  2) "loads these weights (fp16, 2.52 MB) into a hand-written **~2.5 MB JavaScript**
+     forward pass" —— 2.52 MB 是权重，不是那段 JS（`web/nn.js` 只有几 KB）。
+     改成"没有 ONNX 运行时，所以整个下载量就是权重本身"。
+  3) "raw pixels, the same **rendering pipeline** that draws the canvas on the right"
+     —— AI 根本不读画布，`web/obs.js` 是解析式重建的，这句和 `parity_ai.md`
+     自相矛盾。改成"same sprites and geometry"。
+     `LINKEDIN_POST.md` 里同样的 2.5 MB 歧义也一并改了。
+  其余数字逐条核对过**都是真的**：1,258,659 参数、1.3 根 / 10 万局、75% 死亡信号
+  被丢、目标网络卡在 train 模式、奖励尺度撑爆 Huber、n_step=3 横盘、
+  78.2 / 86.4 / 6.8、28 ms vs 133 ms 预算 —— 均有 `docs/` 出处。
+  `demo_wechat_30s.mp4` 确实存在（1.15 MB）。
+  新增 `web/tools/mobile_check.mjs`：起因是我先用 `chrome --window-size=390,844`
+  截图，看到"内容被右边裁掉"，差点判定移动端布局是坏的。**是截图方法错了** ——
+  `--window-size` 不构成移动端布局视口。换成 CDP 的 `setDeviceMetricsOverride`
+  （`mobile:true` + 真实 dpr）之后，320 / 390 / 414 三档 `scrollWidth` 全部
+  等于 `innerWidth`、零元素越界、零 JS 报错，云端那句"移动端已验证"是对的。
+  这个工具给出可判定结论而不是让人看截图猜，省得下次再来一遍。
 
 - 2026-09-04：新建 `web/game.js`，ES module，`FlappyGame` 类。逐条对照
   `game/flappy_env.py`（物理常量、`_sample_pipe`/`_plan_next`/`_center_range`/
