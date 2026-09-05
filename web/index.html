@@ -76,6 +76,49 @@
   kbd { background:#1b2017; border:1px solid var(--rule); border-radius:3px;
         padding:1px 6px; font-family: ui-monospace, Consolas, monospace; font-size:11px; }
   #boot { text-align: center; color: var(--dim); font-size: 13px; padding: 40px 0; }
+
+  /* ---- 讲解区：正常的可滚动阅读排版，不受上面 user-select:none 影响 ---- */
+  #learn {
+    max-width: 640px; margin: 8px auto 0; padding-top: 8px;
+    border-top: 1px solid var(--rule);
+    -webkit-user-select: text; user-select: text;
+  }
+  #learn h2 {
+    font-size: clamp(15px, 3.6vw, 18px); margin: 30px 0 8px; color: var(--ink);
+  }
+  #learn h2 small { display: block; font-size: 11px; font-weight: 400; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--dim); margin-bottom: 3px; }
+  #learn p { font-size: clamp(13px, 3vw, 14.5px); line-height: 1.6; color: #c7cec0; margin: 0 0 10px; }
+  #learn code { background: #1b2017; border: 1px solid var(--rule); border-radius: 3px;
+    padding: 1px 5px; font-family: ui-monospace, Consolas, monospace; font-size: .92em; color: var(--ink); }
+  #learn .callout {
+    background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--ai);
+    border-radius: 0 6px 6px 0; padding: 10px 12px; margin: 12px 0;
+  }
+  #learn .callout p { margin: 0; color: var(--ink); }
+  #learn .stat-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+  #learn .stat {
+    flex: 1 1 130px; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
+    padding: 8px 10px;
+  }
+  #learn .stat b { display: block; font-size: clamp(16px, 4vw, 20px); font-variant-numeric: tabular-nums; }
+  #learn .stat span { font-size: 10.5px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+  #learn .stat.you b { color: var(--you); }
+  #learn .stat.ai b { color: var(--ai); }
+
+  .netdiag { display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+    gap: 4px; margin: 14px 0; font-size: 10.5px; }
+  .netdiag .box { background: var(--panel); border: 1px solid var(--rule); border-radius: 5px;
+    padding: 6px 8px; text-align: center; color: var(--ink); line-height: 1.35; min-width: 54px; }
+  .netdiag .box small { display: block; color: var(--dim); font-size: 9.5px; }
+  .netdiag .arrow { color: var(--dim); font-size: 13px; }
+  .netdiag .heads { display: flex; flex-direction: column; gap: 4px; }
+  .netdiag .box.v { border-color: var(--you); }
+  .netdiag .box.a { border-color: var(--ai); }
+  .netdiag .box.q { border-color: var(--ink); }
+
+  #learn footer.credits { border-top: 1px solid var(--rule); margin-top: 26px; padding-top: 14px; }
+  #learn footer.credits a { color: var(--ai); }
 </style>
 </head>
 <body>
@@ -119,6 +162,138 @@
     <button id="reseed">new pipe sequence</button>
     <span id="perf"></span>
   </footer>
+
+  <section id="learn">
+    <h2><small>Reinforcement learning, briefly</small>What the agent actually sees</h2>
+    <p>
+      The AI never receives your coordinates, your height, or the pipe distance as
+      numbers. Its only input is four stacked <code>80&times;128</code> black-and-white
+      frames &mdash; raw pixels, the same rendering pipeline that draws the canvas on
+      the right, just smaller and binary. No hand-engineered features: velocity, gap
+      position, everything it "knows" is inferred from how those four frames differ
+      from one another.
+    </p>
+    <p>
+      It commits to one of two actions &mdash; <em>flap</em> or <em>don't</em> &mdash;
+      every 4 frames, holding that choice for the whole window
+      (<code>frame_skip=4</code>, <code>frame_stack=4</code>). A single frame can't
+      even tell you which way the bird is moving; only the stack can.
+    </p>
+
+    <h2><small>The learning signal</small>Reward, and the Q-function</h2>
+    <p>
+      The reward is almost insultingly simple: <code>+1</code> for clearing a pipe,
+      <code>&minus;1</code> for dying, <code>0</code> otherwise. Everything the agent
+      does &mdash; every twitch of the wing &mdash; is in service of maximizing the
+      discounted sum of that signal over the rest of the episode.
+    </p>
+    <p>
+      It learns this through a <strong>Q-function</strong>, <code>Q(s,a)</code>:
+      "if I take action <code>a</code> right now, how much total future reward
+      should I expect?" Acting is then just picking the higher of the two numbers
+      every step &mdash; <code>argmax Q(s,&middot;)</code>. Training is
+      <strong>Double DQN</strong>: one network picks the action, a separate slowly-updated
+      target network scores it, which keeps the Q-values from drifting upward on
+      their own optimism.
+    </p>
+
+    <h2><small>Why the network has two heads</small>Value, advantage, and Q = V + A</h2>
+    <p>
+      Most frames don't matter. If the bird is centered in a gap with the next pipe
+      still far off-screen, flapping or not flapping barely changes the outcome &mdash;
+      what matters is the overall situation, captured by the <strong>state value</strong>
+      <code>V(s)</code>. Only in a narrow band of frames, right at a gap edge, does the
+      choice of action carry real weight &mdash; the <strong>advantage</strong>
+      <code>A(s,a)</code>.
+    </p>
+    <div class="netdiag">
+      <div class="box">shared conv+fc trunk</div>
+      <span class="arrow">&rarr;</span>
+      <div class="heads">
+        <div class="box v">V(s)<small>1 output</small></div>
+        <div class="box a">A(s,a)<small>2 outputs</small></div>
+      </div>
+      <span class="arrow">&rarr;</span>
+      <div class="box q">Q = V + A &minus; mean(A)</div>
+    </div>
+    <p>
+      Splitting the last layer into these two heads means the value branch learns
+      from <em>every</em> frame, regardless of which action was actually taken that
+      step &mdash; instead of only the played action getting a gradient, as in a
+      plain DQN. Subtracting the mean of <code>A</code> isn't optional polish: without
+      it, <code>V</code> and <code>A</code> aren't uniquely determined by <code>Q</code>
+      (add a constant to one, subtract it from the other, <code>Q</code> is unchanged),
+      and the two heads drift apart during training.
+    </p>
+
+    <h2><small>Architecture</small>1,258,659 parameters, no shortcuts</h2>
+    <p>
+      Three convolutions on the raw pixel stack &mdash; the same shape Mnih et al.
+      used for Atari &mdash; feeding a 256-unit fully-connected trunk, then the
+      value/advantage split above. No BatchNorm, no dropout.
+    </p>
+    <div class="netdiag">
+      <div class="box">input<small>4&times;80&times;128</small></div>
+      <span class="arrow">&rarr;</span>
+      <div class="box">conv 8&times;8/4<small>32ch</small></div>
+      <span class="arrow">&rarr;</span>
+      <div class="box">conv 4&times;4/2<small>64ch</small></div>
+      <span class="arrow">&rarr;</span>
+      <div class="box">conv 3&times;3/1<small>64ch</small></div>
+      <span class="arrow">&rarr;</span>
+      <div class="box">fc<small>256</small></div>
+    </div>
+    <p>
+      The browser version you're playing against loads exactly these weights
+      (<code>fp16</code>, 2.52&nbsp;MB) into a hand-written ~2.5&nbsp;MB JavaScript
+      forward pass &mdash; no ONNX runtime, no WASM blob. 28&nbsp;ms per decision,
+      against a 133&nbsp;ms budget.
+    </p>
+
+    <h2><small>Does it actually match the Python model?</small>Verified, not assumed</h2>
+    <p>
+      Porting a trained model to a hand-written JS re-implementation is exactly
+      the kind of change that silently degrades. So every layer of this port is
+      checked bit-for-bit against the original: 1,200 reconstructed observation
+      frames match the Python rendering pipeline pixel-for-pixel, and 300 sampled
+      decisions match the PyTorch model's action for action (max Q-value deviation
+      4&times;10&minus;3, from the fp16 weights). The parity harness ships in the
+      repo &mdash; <code>web/tools/</code> &mdash; and needs no Python to re-run.
+    </p>
+
+    <h2><small>Results</small>How it actually plays</h2>
+    <div class="stat-row">
+      <div class="stat ai"><b>78.2</b><span>Python eval &middot; 100 episodes</span></div>
+      <div class="stat ai"><b>86.4</b><span>this browser build &middot; 30 episodes</span></div>
+      <div class="stat you"><b>6.8</b><span>human baseline &middot; small sample</span></div>
+    </div>
+    <p>
+      Both numbers describe the same weights running two different code paths;
+      the gap between them (standard error 14.8) is noise, not a regression &mdash;
+      Flappy Bird scores are heavy-tailed (median 45.5, best run 322 pipes), so a
+      single average understates how often it either dies early or nearly never dies.
+      The human number comes from a small sample &mdash; take it as a rough sense of
+      scale, not a rigorous baseline.
+    </p>
+    <div class="callout">
+      <p>
+        This is the same network architecture that, on an earlier version of the
+        training pipeline, plateaued at <strong>1.3 pipes</strong> after 100,000
+        episodes. The fix wasn't a better algorithm or more compute &mdash; it was
+        finding and closing about a dozen structural bugs in the data pipeline
+        (a terminal-state flag silently dropped 75% of the time, a target network
+        stuck in training mode, a reward scale that saturated the loss function).
+        Not every n-step or epsilon variant tried afterward helped either &mdash;
+        <code>n_step=3</code> made no measurable difference, and lowering eval
+        epsilon to 0.01 dropped the score 6.2&times;. The write-ups for both the
+        failures and the fixes are in the repo.
+      </p>
+    </div>
+
+    <footer class="credits">
+      <span>Code, training logs, and the full write-up: <a href="https://github.com/zfwk1992/Flyppy_bird_RL_learn" target="_blank" rel="noopener">github.com/zfwk1992/Flyppy_bird_RL_learn</a></span>
+    </footer>
+  </section>
 </div>
 
 <script type="module">
