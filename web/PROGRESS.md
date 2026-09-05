@@ -5,8 +5,11 @@
 
 ## 当前阶段
 
-**阶段 1、阶段 2、阶段 3：全部完成。** 阶段 4 做了两项（Cloudflare Pages 配置、
-OG 卡片图），**只剩 LinkedIn 帖子草稿**。做完那一项，整个 plan.md 就全部完成了。
+**plan.md 里能由 agent 做的部分全部完成**（阶段 1～4）。剩下的是需要人做的事：
+Cloudflare Pages 控制台的实际部署操作（agent 没有账号访问权限，`web/DEPLOY.md`
+是给人看的清单）、`web/LINKEDIN_POST.md` 草稿的语气润色、拿到真实部署 URL 后
+替换帖子里的占位符、真机走一遍触摸体验。**如果冷启动看到这行，先去确认这几件
+"只能人做"的事有没有进展，而不是重新翻 plan.md 找活干——没有代码活了。**
 
 ## 阶段清单
 
@@ -43,7 +46,9 @@ OG 卡片图），**只剩 LinkedIn 帖子草稿**。做完那一项，整个 pl
   - [x] OG 卡片图：`web/assets/og-card.jpg`（1200×630，78.5KB），源文件
         `web/tools/og_card_source.html` + 渲染脚本
         `web/tools/render_og_card.mjs`，`index.html` 已加 og:/twitter: 元标签
-  - [ ] LinkedIn 帖子草稿
+  - [x] LinkedIn 帖子草稿：`web/LINKEDIN_POST.md`（正文 + 第一条评论 + 话题标签
+        + 发布检查表）。**这是草稿**，`plan.md` 第九节仍然标注需要人工润色，
+        发布前还要把占位符 URL 换成真实部署地址。
 
 ## 阻塞项
 
@@ -280,3 +285,21 @@ OG 卡片图），**只剩 LinkedIn 帖子草稿**。做完那一项，整个 pl
      Post Inspector 验一遍相对路径能不能被正确解析，不行就换绝对 URL"。
 
   下一步：阶段 4 最后一项——LinkedIn 帖子草稿。做完这个 plan.md 就全部完成了。
+
+- 2026-09-05（云端）：阶段 4 最后一项——**LinkedIn 帖子草稿**，`plan.md`
+  里 agent 能做的部分至此全部完成。
+
+  新增 `web/LINKEDIN_POST.md`：正文（钩子句 + agent 看到什么/优化什么 + 为什么
+  用 Dueling 架构 + 78.2/86.4/6.8 三个结果数字 + "曾经卡在 1.3 根、问题出在
+  数据管线不在算法"的工程故事 + CTA）、第一条评论（demo 链接占位符 + GitHub
+  仓库链接，故意不放进正文——`plan.md` 第一节定的策略是 LinkedIn 算法会压低
+  带外链帖子的曝光）、话题标签、发布前检查表。数字和技术细节全部对得上
+  `web/index.html` 的 `#learn` 区块和这次任务 prompt 里给的实测数据，没有编造。
+  同时在 `plan.md` 第九节记了两件还需要**人**做的事：帖子文案润色、
+  Cloudflare Pages 的实际部署操作（agent 没有控制台访问权限）。
+
+  **`plan.md` 里所有能由 agent 完成的条目到此为止全部做完。** 剩下全是需要
+  人工操作的部分（部署到 Cloudflare、买不买域名、文案润色、真机测试、
+  实际发帖）——这些不在 agent 的能力范围内，冷启动后不用再重新扫一遍
+  plan.md 找代码活了；如果这几件人工事项之后又衍生出新的代码需求
+  （比如部署后发现某个真机 bug），到时候再处理。

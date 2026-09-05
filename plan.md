@@ -196,4 +196,8 @@ AI 会碾压绝大多数人 —— **这是刻意保留的**，不加反应延�
 
 ## 九、仍待决定
 
-- 英文文案由谁起草（目前按「先由 agent 起草、你再润色」推进）
+- 英文文案由谁起草（目前按「先由 agent 起草、你再润色」推进）—— 页面讲解
+  （`web/index.html` 的 `#learn` 区块）和 LinkedIn 帖子（`web/LINKEDIN_POST.md`）
+  草稿都已由 agent 写好，**还需要你过一遍润色语气**，尤其是帖子正文的钩子句。
+- Cloudflare Pages 的实际部署（dashboard 操作，见 `web/DEPLOY.md`）和买不买
+  自定义域名，需要人工去 Cloudflare 控制台完成——agent 没有账号访问权限。
