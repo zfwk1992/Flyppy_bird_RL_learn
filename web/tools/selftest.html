@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<title>web selftest</title>
+<style>
+  body { background:#0e110d; color:#e8ece4; font:13px/1.6 ui-monospace, Consolas, monospace;
+         margin:0; padding:16px; }
+  pre { white-space:pre-wrap; margin:0; }
+  .ok { color:#7fd07f; } .bad { color:#e07070; }
+</style>
+</head>
+<body>
+<pre id="out">running…</pre>
+<script type="module">
+/**
+ * 在**真浏览器里**跑一遍阶段 2 的验收，而不是只在 Node 里跑。
+ *
+ * 为什么值得单独做一份：obs.js 和 nn.js 在 Node 和浏览器里跑的是同一份源码，
+ * 但 JS 引擎的浮点优化（尤其是 Math.pow、Float32Array 的舍入路径）理论上
+ * 可能不同。既然验收标准是"浏览器里的 AI 和 Python 一致"，那就该在浏览器里验。
+ *
+ * 这个页面不渲染、不用 requestAnimationFrame —— 用 setTimeout 切片，
+ * 这样 headless Chrome 的 --virtual-time-budget 能把它瞬间跑完：
+ *
+ *   chrome --headless=new --virtual-time-budget=600000 --dump-dom \
+ *          http://localhost:8123/tools/selftest.html
+ *
+ * 跑完后 document.title 变成 SELFTEST-OK 或 SELFTEST-FAIL。
+ */
+import { FlappyGame, OBS_W, OBS_H } from '../game.js';
+import { HITMASKS } from '../assets/hitmasks.js';
+import { renderRed, downsample, FrameStack } from '../obs.js';
+import { createAi, FRAME_SKIP, FRAME_STACK } from '../ai.js';
+
+const out = document.getElementById('out');
+const lines = [];
+let failed = false;
+const say = (s, bad) => {
+  lines.push(bad ? `<span class="bad">${s}</span>` : s);
+  if (bad) failed = true;
+  out.innerHTML = lines.join('\n');
+};
+const yieldTick = () => new Promise((r) => setTimeout(r, 0));
+
+const [trace, nnRef, ai] = await Promise.all([
+  fetch('./trace_ai.json').then((r) => r.json()),
+  fetch('./nn_ref.json').then((r) => r.json()),
+  createAi('../model/'),
+]);
+const { meta, draws, frames } = trace;
+
+let cursor = 0;
+const rng = () => {
+  if (cursor >= draws.length) throw new Error('随机数用尽');
+  return draws[cursor++];
+};
+const makeGame = () => new FlappyGame({
+  randomize: meta.randomize, gapRange: meta.gap_range,
+  spacingRange: meta.spacing_range, edgeMargin: meta.edge_margin,
+  maxDeltaFrac: meta.max_delta_frac, pipeGap: meta.pipe_gap,
+  rng, hitmasks: HITMASKS,
+});
+
+// ---------------------------------------------------------------
+// 1. 重放 trace_ai：浏览器算出的 Q 值必须和 PyTorch 的对得上
+// ---------------------------------------------------------------
+{
+  let game = makeGame();
+  game.reset();
+  const stack = new FrameStack(FRAME_STACK);
+  const red = new Uint8Array(288 * 512);
+  const obs = new Float32Array(OBS_W * OBS_H);
+  let first = true, action = 0, d = 0, okAct = 0, maxErr = 0;
+
+  for (let i = 0; i < frames.length; i++) {
+    if (i % FRAME_SKIP === 0) {
+      renderRed(game, red);
+      downsample(red, obs);
+      const arr = first ? stack.reset(obs) : stack.push(obs);
+      first = false;
+      const q = ai.net.forward(arr);
+      const exp = nnRef.decisions[d++];
+      maxErr = Math.max(maxErr, Math.abs(q[0] - exp.q[0]), Math.abs(q[1] - exp.q[1]));
+      action = q[1] > q[0] ? 1 : 0;
+      if (action === exp.action) okAct++;
+    }
+    const { done } = game.step(action);
+    if (done !== frames[i].done) { say(`帧 ${i}: done 与 Python 不一致`, true); break; }
+    if (done) { game = makeGame(); game.reset(); first = true; }
+    if (i % 200 === 0) await yieldTick();
+  }
+  const n = nnRef.decisions.length;
+  say(`重放 trace_ai：动作一致 ${okAct}/${n}，Q 值最大偏差 ${maxErr.toExponential(2)}`,
+    okAct !== n || maxErr > 0.05);
+}
+
+// ---------------------------------------------------------------
+// 2. 真跑几局，成绩必须和 Node 侧**逐局相同**。
+//    比"平均分落在某个区间"强得多：AI 是确定性的（eval_epsilon=0），
+//    同一个 seed 只可能有一个结果，差一根就说明两个引擎的浮点路径分岔了。
+//    这五个数是 `node web/tools/ai_eval.mjs` 前五局的输出。
+// ---------------------------------------------------------------
+{
+  const EXPECT = [20, 33, 23, 46, 33];
+  const scores = [];
+  const t0 = performance.now();
+  for (let ep = 0; ep < EXPECT.length; ep++) {
+    const game = new FlappyGame({ seed: 1000 + ep, hitmasks: HITMASKS });
+    game.reset();
+    ai.reset();
+    for (let i = 0; i < 20000; i++) {
+      if (game.step(ai.decide(game)).done) break;
+      if (i % 200 === 0) await yieldTick();
+    }
+    scores.push(game.score);
+    say(`  seed ${1000 + ep}: ${game.score} 根（Node: ${EXPECT[ep]}）`,
+      game.score !== EXPECT[ep]);
+  }
+  const ms = performance.now() - t0;
+  say(`浏览器 vs Node 逐局一致: ${scores.filter((s, i) => s === EXPECT[i]).length}/${EXPECT.length}`
+    + `，这 5 局耗时 ${(ms / 1000).toFixed(1)}s`);
+}
+
+say(failed ? '\nSELFTEST FAILED' : '\nSELFTEST OK', failed);
+document.title = failed ? 'SELFTEST-FAIL' : 'SELFTEST-OK';
+</script>
+</body>
+</html>
