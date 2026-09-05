@@ -5,7 +5,7 @@
 
 ## 当前阶段
 
-**阶段 1：游戏本体（JS）** — 未开始
+**阶段 1：游戏本体（JS）** — 差最后一项（键盘/触摸控制 + 一键重开）
 
 ## 阶段清单
 
@@ -14,7 +14,7 @@
   - [x] 种子化 PRNG（两只鸟必须共用同一组管道）
   - [x] Canvas 渲染：管道 / 小鸟 / 地面，黑底
   - [ ] 键盘 + 触摸控制，一键重开
-  - [ ] **验收**：`web/tools/parity_game.md` 里记录同种子下 JS 与 Python 的管道序列比对结果
+  - [x] **验收**：见 `web/tools/parity_game.md` —— 1200 帧 / 144 次抽样 / 5 回合逐位一致（PARITY OK）
 - [ ] **阶段 2　AI 上场**
   - [ ] 模型导出 ONNX fp16（需要本机 torch，见下方「阻塞项」）
   - [ ] 离屏画布 + 覆盖判定降采样到 80×128 + 4 帧栈
@@ -31,6 +31,26 @@
   - [ ] LinkedIn 帖子草稿
 
 ## 阻塞项
+
+- **ONNX 导出需要 torch** —— 云端未必装得上。若装不上就跳过阶段 2 的导出，
+  先做阶段 1、3 里不依赖 AI 的部分，并在这里记一笔。
+  （本机已有 torch 环境，必要时可由本机导出并提交，云端就不需要 torch 了。）
+
+## 本机（非云端）才能做的事
+
+云端跑不了这些，需要在有 torch + pygame 的机器上做：
+
+- `python web/tools/dump_python_trace.py` —— 重新生成参考轨迹。
+  **只有改了 `game/flappy_env.py` 才需要重跑**；`trace.json` 已提交，
+  改 `web/game.js` 之后只要跑 `node web/tools/parity_check.mjs` 就行。
+- 阶段 2 的 ONNX 导出（若云端装不上 torch）。
+
+## 给云端的提醒
+
+- **本机已装 Node v24.19.0**，`node web/tools/parity_check.mjs` 可直接跑。
+- **改完 `web/game.js` 必须重跑一次 parity 比对**，这是阶段 1 的验收标准，
+  别让它退化。
+
 
 - **ONNX 导出需要 torch**，云端环境未必装得上。如果装不上，
   跳过阶段 2 的导出，先把阶段 1、3 的非 AI 部分做完，并在这里记下来。
@@ -100,3 +120,19 @@
   Python/JS 管道序列比对（阶段 1 的验收项，目前还没做）。
 
 （每次运行在这里追加一行：日期 + 做了什么 + 下一步）
+
+- 2026-09-05（本机）：补上阶段 1 的验收项。设计并跑通了 JS/Python 逐帧一致性
+  比对，结果 **PARITY OK**：1200 帧、144 次随机抽样、5 个回合，物理
+  （`playery`/`playerVelY`/`basex`）与管道生成（`x`/`y`/`gap`）逐位一致，
+  随机数消费次数也相等，计分与 done/reset 逐帧一致。
+  方法不是"两边同一个 seed"（Python 是 Mersenne Twister，JS 没有等价实现，
+  移植 MT19937 验证的是 PRNG 而非游戏逻辑），而是把 Python 消费的每一个
+  `random()` 原始抽样记下来让 JS 重放 —— 两边 uniform 公式等价，同一个 r
+  进去逐位相同。详见 `web/tools/parity_game.md`。
+  顺带确认了 `web/assets/sprites-data.js` 里 6 张内嵌精灵与
+  `assets/sprites/*.png` **字节完全一致**（md5 逐个比对），渲染源可信 ——
+  这对阶段 2 的观测管线很关键。
+  本机装了 Node v24.19.0。
+  下一步：阶段 1 只剩「键盘 + 触摸控制、一键重开」。注意 `index.html` 里
+  现在那段输入处理是渲染层的临时冒烟测试，要换成正式实现；
+  重开要**瞬间**生效（plan.md 已定：不削弱 AI，靠快速重开维持体验）。
