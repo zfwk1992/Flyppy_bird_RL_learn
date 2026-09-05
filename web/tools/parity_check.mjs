@@ -14,9 +14,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FlappyGame } from '../game.js';
+import { HITMASKS } from '../assets/hitmasks.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const trace = JSON.parse(fs.readFileSync(path.join(HERE, 'trace.json'), 'utf8'));
+// 用法：node parity_check.mjs [trace.json] [--bbox]
+//   --bbox 强制退化成包围盒判定，用来确认这条轨迹对碰撞判定是否有鉴别力
+const args = process.argv.slice(2);
+const useBbox = args.includes('--bbox');
+const traceFile = args.find((a) => !a.startsWith('--')) || 'trace.json';
+const trace = JSON.parse(fs.readFileSync(path.join(HERE, traceFile), 'utf8'));
 const { meta, draws, frames } = trace;
 
 // 重放 Python 的抽样序列。用光了就抛错 —— 说明 JS 比 Python 多抽了随机数，
@@ -38,6 +44,9 @@ const makeGame = () => new FlappyGame({
   maxDeltaFrac: meta.max_delta_frac,
   pipeGap: meta.pipe_gap,
   rng: replayRng,
+  // 像素级碰撞掩码，从 Python 的 HITMASKS 直接导出 —— 不接的话 JS 退化成
+  // 包围盒判定，而小鸟只有 72% 不透明，AI 擦边飞行时会死在 Python 不会死的地方
+  hitmasks: useBbox ? null : HITMASKS,
 });
 
 let game = makeGame();
@@ -90,7 +99,7 @@ for (const f of frames) {
   if (bad.length >= 12) break;   // 前十几条足够定位，不刷屏
 }
 
-console.log(`比对 ${checked} / ${frames.length} 帧，消费随机数 ${cursor} / ${draws.length}`);
+console.log(`[${traceFile}${useBbox ? ' --bbox' : ''}] 比对 ${checked} / ${frames.length} 帧，消费随机数 ${cursor} / ${draws.length}`);
 if (bad.length === 0 && cursor === draws.length) {
   console.log('PARITY OK  物理与管道生成逐位一致，随机数消费次数也一致');
   process.exit(0);

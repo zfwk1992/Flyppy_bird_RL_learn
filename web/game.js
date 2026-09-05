@@ -105,8 +105,9 @@ function makeCycle(arr) {
  * `game/resources.py: pixelCollision`。
  *
  * mask1 / mask2 是可选的二维数组 mask[x][y] -> boolean（对应精灵 alpha 通道，
- * 由渲染阶段从 PNG 解出后传入）。缺省（null/undefined）时退化为纯包围盒判定
- * —— 这是渲染阶段接入 hitmask 之前的过渡状态，不是最终行为。
+ * 见 `web/assets/hitmasks.js`，那份是从 Python 的 HITMASKS 直接导出的）。
+ * 缺省时退化为纯包围盒判定 —— 但小鸟只有 72% 不透明、管道 93%，
+ * 退化版会让擦边飞行误判为撞击，**正式使用必须传 hitmasks**。
  */
 function pixelCollision(rect1, rect2, mask1, mask2) {
   const x1 = Math.max(rect1.x, rect2.x);
@@ -352,7 +353,14 @@ export class FlappyGame {
       return true;
     }
 
-    const playerRect = { x: this.playerx, y: this.playery, w: PLAYER_WIDTH, h: PLAYER_HEIGHT };
+    // pygame.Rect 会把浮点坐标**向零截断**成整数（Math.trunc，不是 Math.floor
+    // —— 负数上两者不同：-34.976 在 pygame 里是 -34）。JS 侧必须照做，否则
+    //   1. 掩码索引会变成小数，mask[166.5] === undefined 直接抛错
+    //   2. 即使不抛错，判定边界也会和 Python 差半个像素
+    const playerRect = {
+      x: Math.trunc(this.playerx), y: Math.trunc(this.playery),
+      w: PLAYER_WIDTH, h: PLAYER_HEIGHT,
+    };
     const pMask = this.hitmasks ? this.hitmasks.player[this.playerIndex] : null;
     const uMask = this.hitmasks ? this.hitmasks.pipeUpper : null;
     const lMask = this.hitmasks ? this.hitmasks.pipeLower : null;
@@ -360,8 +368,14 @@ export class FlappyGame {
     for (let i = 0; i < this.upperPipes.length; i++) {
       const uPipe = this.upperPipes[i];
       const lPipe = this.lowerPipes[i];
-      const uRect = { x: uPipe.x, y: uPipe.y, w: PIPE_WIDTH, h: PIPE_HEIGHT };
-      const lRect = { x: lPipe.x, y: lPipe.y, w: PIPE_WIDTH, h: PIPE_HEIGHT };
+      const uRect = {
+        x: Math.trunc(uPipe.x), y: Math.trunc(uPipe.y),
+        w: PIPE_WIDTH, h: PIPE_HEIGHT,
+      };
+      const lRect = {
+        x: Math.trunc(lPipe.x), y: Math.trunc(lPipe.y),
+        w: PIPE_WIDTH, h: PIPE_HEIGHT,
+      };
 
       if (
         pixelCollision(playerRect, uRect, pMask, uMask) ||

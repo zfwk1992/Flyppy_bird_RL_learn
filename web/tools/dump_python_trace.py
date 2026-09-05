@@ -49,6 +49,12 @@ from game.flappy_env import PIPE_HEIGHT, PIPE_WIDTH, PLAYER_HEIGHT      # noqa: 
 N_FRAMES = 1200
 SEED = 12345
 
+# 第二条轨迹用**训练好的模型**驱动。理由：bang-bang 启发式撞得很干脆，
+# 覆盖不到"擦着管道边缘飞过"的情形，于是包围盒和像素掩码的差异测不出来
+# —— 那样 parity 就没有鉴别力。真实模型有 4.6% 的通过是擦边的，
+# 正好压在两种碰撞判定会分歧的地方。
+USE_MODEL = os.environ.get("TRACE_POLICY", "heuristic") == "model"
+
 
 def chase_gap(e):
     """朴素 bang-bang 控制，只为让轨迹覆盖更多管道，不追求成绩。"""
@@ -76,13 +82,43 @@ def snapshot(e, i, action, score, done, did_reset):
 cfg = resolve_config()
 random.seed(SEED)
 env = make_env(cfg)
+
+policy = None
+if USE_MODEL:
+    import numpy as np
+    import torch
+    from flappy import checkpoint
+    from flappy.rollout import FrameStack
+    _dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    _net, _mcfg, _ = checkpoint.load_for_inference("models/final_v1_best.pt", _dev)
+    _stack = FrameStack(cfg["frame_stack"])
+    _state = {"stack": None}
+
+    def policy(e, first):
+        obs = e.observe()
+        _state["stack"] = (_stack.reset(obs) if first
+                           else _stack.push(obs))
+        with torch.no_grad():
+            t = torch.from_numpy(_state["stack"]).unsqueeze(0).to(_dev)
+            return int(_net(t).argmax(1).item())
+
 env.reset()
 
 frames = []
 episodes = 1
+_just_reset = True
 for i in range(N_FRAMES):
-    action = chase_gap(env)
-    obs, r, done, info = env.step(action, render=False)
+    if policy is not None:
+        # 模型按决策级动作（frame_skip=4）；这里按帧记录，所以每 4 帧问一次，
+        # 窗口内重复同一个动作 —— 与 rollout.skip_step 的语义一致
+        if i % cfg["frame_skip"] == 0:
+            _cur_action = policy(env, _just_reset)
+            _just_reset = False
+        action = _cur_action
+    else:
+        action = chase_gap(env)
+    # 模型策略要读画面，所以必须渲染
+    obs, r, done, info = env.step(action, render=(policy is not None))
     # 快照必须在 reset **之前** 取：done 那一帧要记的是撞死时的状态，
     # 不是重开后的状态。写反了会让比对在每个 done 帧上假报不一致
     # （PY 记成 224/0/0 的重开值，JS 记的是崩溃值）。
@@ -93,6 +129,7 @@ for i in range(N_FRAMES):
         # 两边的抽样顺序才对得上。
         env.reset()
         episodes += 1
+        _just_reset = True
 
 out = {
     "meta": {
@@ -108,7 +145,8 @@ out = {
     "draws": _DRAWS,
     "frames": frames,
 }
-dst = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trace.json")
+dst = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                   "trace_ai.json" if USE_MODEL else "trace.json")
 with open(dst, "w", encoding="utf-8") as f:
     json.dump(out, f)
 print("wrote %s : %d frames, %d draws, %d episodes"

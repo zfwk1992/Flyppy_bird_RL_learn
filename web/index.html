@@ -2,67 +2,168 @@
 <html lang="zh">
 <head>
 <meta charset="utf-8" />
-<title>Flappy Bird RL — 渲染冒烟测试</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Flappy Bird RL — 玩一局</title>
 <style>
-  html, body { margin: 0; background: #111; color: #ddd; font-family: sans-serif; }
-  #wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 16px; }
-  canvas { background: #000; image-rendering: pixelated; border: 1px solid #444; }
-  p { max-width: 288px; font-size: 13px; line-height: 1.5; }
+  :root { --ink:#e8ece4; --dim:#8b9384; --rule:#2a2f26; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; background: #0e110d; color: var(--ink);
+    font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    -webkit-user-select: none; user-select: none;
+    overscroll-behavior: none; touch-action: manipulation;
+  }
+  #wrap {
+    height: 100%; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 12px; padding: 12px;
+  }
+  #stage { position: relative; }
+  canvas {
+    display: block; background: #000; image-rendering: pixelated;
+    border: 1px solid var(--rule); border-radius: 4px;
+    height: min(78vh, 512px); width: auto;
+  }
+  #hud {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px;
+    background: rgba(0,0,0,.62); border-radius: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  #hud[hidden] { display: none; }
+  #hud .big { font-size: 30px; font-weight: 700; }
+  #hud .sub { font-size: 13px; color: var(--dim); }
+  #score {
+    position: absolute; top: 10px; left: 0; right: 0; text-align: center;
+    font-size: 26px; font-weight: 700; pointer-events: none;
+    text-shadow: 0 2px 0 #000, 0 0 8px #000;
+  }
+  #meta {
+    display: flex; gap: 22px; font-size: 13px; color: var(--dim);
+    font-variant-numeric: tabular-nums;
+  }
+  kbd {
+    background:#1b2017; border:1px solid var(--rule); border-radius:3px;
+    padding:1px 6px; font-family: ui-monospace, Consolas, monospace; font-size:12px;
+  }
 </style>
 </head>
 <body>
 <div id="wrap">
-  <canvas id="game" width="288" height="512"></canvas>
-  <p>
-    这是渲染层的开发用冒烟测试，<strong>不是</strong>最终的控制/重开体验
-    （那是下一个阶段清单项）。空格 = 扇翅。死亡后定格，刷新页面重来。
-  </p>
+  <div id="stage">
+    <canvas id="game" width="288" height="512"></canvas>
+    <div id="score">0</div>
+    <div id="hud">
+      <div class="big" id="hudTitle">点击或按空格开始</div>
+      <div class="sub" id="hudSub">缝隙 85–165px 逐根随机</div>
+    </div>
+  </div>
+  <div id="meta">
+    <span>本局 <b id="mCur">0</b></span>
+    <span>最佳 <b id="mBest">0</b></span>
+    <span><kbd>空格</kbd> 扇翅 · <kbd>R</kbd> 重开</span>
+  </div>
 </div>
+
 <script type="module">
-  import { FlappyGame } from './game.js';
-  import { loadSprites, Renderer } from './render.js';
+import { FlappyGame } from './game.js';
+import { loadSprites, Renderer } from './render.js';
+import { HITMASKS } from './assets/hitmasks.js';
 
-  const canvas = document.getElementById('game');
-  const ctx = canvas.getContext('2d');
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score');
+const hud = document.getElementById('hud');
+const hudTitle = document.getElementById('hudTitle');
+const hudSub = document.getElementById('hudSub');
+const mCur = document.getElementById('mCur');
+const mBest = document.getElementById('mBest');
 
-  const sprites = await loadSprites();
-  const renderer = new Renderer(ctx, sprites);
+const sprites = await loadSprites();
+const renderer = new Renderer(ctx, sprites);
 
-  // 固定种子只是为了让这次冒烟测试可复现；不是"种子化 PRNG"验收项的一部分
-  // （那个验收项要求两只鸟共用同一组管道，这里只有一只鸟）。
-  const game = new FlappyGame({ seed: 1 });
+// hitmasks 必须传：小鸟只有 72% 不透明，退化成包围盒会把擦边飞过误判成撞击。
+// 见 web/tools/parity_game.md。
+let game = null;
+let best = 0;
+let flapQueued = false;
+let state = 'idle';        // idle | playing | dead
 
-  let flapQueued = false;
-  window.addEventListener('keydown', (e) => {
-    if (e.code === 'Space') flapQueued = true;
-  });
-  canvas.addEventListener('pointerdown', () => { flapQueued = true; });
+function newGame() {
+  game = new FlappyGame({ hitmasks: HITMASKS });
+  game.reset();
+  flapQueued = false;
+  scoreEl.textContent = '0';
+  mCur.textContent = '0';
+}
 
-  // 固定时间步物理（30 步/秒，对照 play.py 的实时观看帧率），渲染跟着
-  // requestAnimationFrame 走，两者解耦——这只是渲染冒烟测试的驱动方式，
-  // 真正的输入/循环设计留给下一个阶段清单项。
-  const STEP_MS = 1000 / 30;
-  let acc = 0;
-  let last = performance.now();
+function setState(s) {
+  state = s;
+  if (s === 'idle') {
+    hud.hidden = false;
+    hudTitle.textContent = '点击或按空格开始';
+    hudSub.textContent = '缝隙 85–165px 逐根随机';
+  } else if (s === 'dead') {
+    hud.hidden = false;
+    hudTitle.textContent = `${game.score} 根`;
+    hudSub.textContent = '点击 / 空格 / R 立刻重开';
+  } else {
+    hud.hidden = true;
+  }
+}
 
-  function tick(now) {
-    if (game.done) {
-      renderer.draw(game.observeState());
-      return; // 定格在死亡帧，不再排队下一次 rAF
-    }
-    acc += now - last;
-    last = now;
+// 一次输入同时承担三件事：开始、扇翅、重开。
+// 死后**立刻**重开、不放 Game Over 动画 —— plan.md 定了不削弱 AI，
+// 体验靠"秒重开"维持，任何停顿都会让人失去再试一次的欲望。
+function press() {
+  if (state === 'idle') { setState('playing'); flapQueued = true; return; }
+  if (state === 'dead') { newGame(); setState('playing'); flapQueued = true; return; }
+  flapQueued = true;
+}
+
+addEventListener('keydown', (e) => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); press(); }
+  else if (e.code === 'KeyR') { newGame(); setState('playing'); }
+});
+// pointerdown 而不是 click：click 在移动端有约 300ms 延迟，游戏受不了
+document.getElementById('stage').addEventListener('pointerdown', (e) => {
+  e.preventDefault(); press();
+});
+
+const STEP_MS = 1000 / 30;      // 与 play.py 的实时观看帧率一致
+let acc = 0;
+let last = performance.now();
+
+function tick(now) {
+  const dt = now - last;
+  last = now;
+  // 切后台回来时 dt 可能是几秒，别让物理一次性追补上百帧
+  acc = Math.min(acc + dt, STEP_MS * 5);
+
+  if (state === 'playing') {
     while (acc >= STEP_MS) {
       const action = flapQueued ? 1 : 0;
       flapQueued = false;
       game.step(action);
       acc -= STEP_MS;
-      if (game.done) break;
+      if (game.done) {
+        best = Math.max(best, game.score);
+        mBest.textContent = String(best);
+        setState('dead');
+        break;
+      }
     }
-    renderer.draw(game.observeState());
-    requestAnimationFrame(tick);
+    scoreEl.textContent = String(game.score);
+    mCur.textContent = String(game.score);
+  } else {
+    acc = 0;
   }
+  renderer.draw(game.observeState());
   requestAnimationFrame(tick);
+}
+
+newGame();
+setState('idle');
+requestAnimationFrame(tick);
 </script>
 </body>
 </html>

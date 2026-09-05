@@ -5,18 +5,19 @@
 
 ## 当前阶段
 
-**阶段 1：游戏本体（JS）** — 差最后一项（键盘/触摸控制 + 一键重开）
+**阶段 1：完成。** 下一步进阶段 2（AI 上场）——
+模型权重和碰撞掩码都已备好，云端不需要 torch。
 
 ## 阶段清单
 
-- [ ] **阶段 1　游戏本体**
+- [x] **阶段 1　游戏本体**
   - [x] `web/game.js`：物理与管道生成，逐条对照 `game/flappy_env.py`
   - [x] 种子化 PRNG（两只鸟必须共用同一组管道）
   - [x] Canvas 渲染：管道 / 小鸟 / 地面，黑底
-  - [ ] 键盘 + 触摸控制，一键重开
+  - [x] 键盘 + 触摸控制，一键重开（`web/index.html`，秒重开无停顿）
   - [x] **验收**：见 `web/tools/parity_game.md` —— 1200 帧 / 144 次抽样 / 5 回合逐位一致（PARITY OK）
 - [ ] **阶段 2　AI 上场**
-  - [ ] 模型导出 ONNX fp16（需要本机 torch，见下方「阻塞项」）
+  - [x] 模型导出 ONNX fp16 —— `web/model/flappy_dqn_fp16.onnx`（2.53 MB，本机已导出并提交）
   - [ ] 离屏画布 + 覆盖判定降采样到 80×128 + 4 帧栈
   - [ ] 浏览器推理
   - [ ] **验收**：同种子同初始状态下动作序列与 Python 一致；浏览器跑 30 局平均落在 70–85
@@ -32,9 +33,8 @@
 
 ## 阻塞项
 
-- **ONNX 导出需要 torch** —— 云端未必装得上。若装不上就跳过阶段 2 的导出，
-  先做阶段 1、3 里不依赖 AI 的部分，并在这里记一笔。
-  （本机已有 torch 环境，必要时可由本机导出并提交，云端就不需要 torch 了。）
+（暂无。原来的 torch 阻塞项已解除 —— 模型已在本机导出成 ONNX 并提交，
+云端不再需要 torch。）
 
 ## 本机（非云端）才能做的事
 
@@ -47,9 +47,19 @@
 
 ## 给云端的提醒
 
-- **本机已装 Node v24.19.0**，`node web/tools/parity_check.mjs` 可直接跑。
-- **改完 `web/game.js` 必须重跑一次 parity 比对**，这是阶段 1 的验收标准，
-  别让它退化。
+- **改完 `web/game.js` 必须重跑两条 parity 比对**，这是阶段 1 的验收标准，别让它退化：
+  ```
+  node web/tools/parity_check.mjs trace.json
+  node web/tools/parity_check.mjs trace_ai.json
+  ```
+  两条都必须 `PARITY OK`。不需要 Python —— trace 已提交。
+- **碰撞必须传 `hitmasks`**（`web/assets/hitmasks.js`）。退化成包围盒会让
+  AI 擦边飞过被误判成撞击 —— 已实测：`--bbox` 跑 AI 轨迹会提前撞死。
+- **模型**：`web/model/flappy_dqn_fp16.onnx`，输入 `obs` float32 `(1,4,80,128)`
+  值域 **[0,1]**（不是 0/255），输出 `q` `(1,2)`。已验证 300 组 argmax 与
+  PyTorch 完全一致。
+- **界面是左右分屏**（plan.md 第四节已更新）：玩家一屏、AI 一屏，同一个 seed
+  所以管道相同。AI 有独立画布，观测天然干净，**不需要离屏画布**。
 
 
 - **ONNX 导出需要 torch**，云端环境未必装得上。如果装不上，
@@ -136,3 +146,24 @@
   下一步：阶段 1 只剩「键盘 + 触摸控制、一键重开」。注意 `index.html` 里
   现在那段输入处理是渲染层的临时冒烟测试，要换成正式实现；
   重开要**瞬间**生效（plan.md 已定：不削弱 AI，靠快速重开维持体验）。
+
+- 2026-09-05（本机）：把阶段 2 的前置全部备好，阶段 1 收尾。
+  1) **ONNX 导出**：`web/model/flappy_dqn_fp16.onnx`（2.53 MB）。fp32 是 5.05 MB，
+     fp16 减半且 300 组随机输入下 **argmax 一次都没变**（Q 值误差 8e-3）。
+     导出脚本一并提交（`web/tools/export_onnx.py` / `pack_onnx.py`），
+     要 fp32 随时能重新生成。**云端不再需要 torch。**
+  2) **像素碰撞掩码**：`web/assets/hitmasks.js`，从 Python 的 `HITMASKS` 直接
+     导出（不是 JS 从 PNG 现算 —— Node 里没 canvas，现算就跑不了 parity）。
+     顺带修了一个真 bug：`pygame.Rect` 会把浮点坐标**向零截断**（`Math.trunc`
+     不是 `Math.floor`，负数上不同），JS 侧原本直接用浮点，接掩码时
+     `mask[166.5]` 直接抛 undefined。
+  3) **第二条 parity 轨迹**：`trace_ai.json`，由**训练好的 CNN** 驱动，
+     1200 帧一次没死（真正的擦边飞行）。这条轨迹有鉴别力：同样的数据用
+     `--bbox` 跑会让 JS 提前撞死。原来那条启发式轨迹撞得太干脆，测不出
+     包围盒和掩码的差异。
+  4) **阶段 1 最后一项**：`web/index.html` 换成正式实现 —— 空格/点击/R 重开，
+     死后秒重开无停顿，接了 hitmasks，移动端 viewport + `pointerdown`（避开
+     click 的 300ms 延迟），切后台回来限制物理追帧。
+  下一步：阶段 2 的「离屏画布 + 覆盖判定降采样到 80×128 + 4 帧栈」。
+  降采样**不必**复刻 cv2 的 INTER_AREA，用「格子内有没有非黑像素」的覆盖
+  判定即可（已实测模型不敏感，见 plan.md 第三节）。
