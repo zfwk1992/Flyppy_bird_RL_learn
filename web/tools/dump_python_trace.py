@@ -1,0 +1,115 @@
+"""导出 Python 侧的参考轨迹，供 JS 逐帧比对（阶段 1 的验收项）。
+
+为什么不能"两边用同一个 seed"
+------------------------------
+Python 的 `random` 是 Mersenne Twister，JS 里没有等价实现，硬对齐要把
+MT19937 移植过去 —— 没必要。真正要验的是**移植的逻辑**，不是两个 PRNG。
+
+所以这里把 Python 消费的每一个 `random()` 原始值记下来，让 JS 按同样顺序
+重放。`random.uniform(a,b)` 就是 `a + (b-a)*random()`，JS 的 `_uniform` 是
+`lo + r*(hi-lo)` —— 同一个 r 进去，IEEE754 下逐位相同。
+
+于是比对拆成两件互不干扰的事：
+  1. **物理**：小鸟 y / 速度只由动作决定，与随机数无关 —— 必须逐帧精确一致
+  2. **管道生成**：喂同一串 random()，管道 x / y / gap 必须逐位一致
+
+动作也一并记录下来让 JS **重放**（而不是重算）。这样即使策略依赖状态，
+一点点分歧也不会让两条轨迹发散成完全不同的东西，第一处不一致能直接定位。
+
+用法：
+    python web/tools/dump_python_trace.py        # 写到 web/tools/trace.json
+"""
+import json
+import os
+import random
+import sys
+
+os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, ROOT)
+
+# 必须 patch 类方法：random.uniform 绑定在模块级 _inst 上，内部调 self.random()，
+# patch 模块级 random.random 抓不到。
+_DRAWS = []
+_orig_random = random.Random.random
+
+
+def _recording_random(self):
+    v = _orig_random(self)
+    _DRAWS.append(v)
+    return v
+
+
+random.Random.random = _recording_random
+
+from flappy.config import resolve_config                                # noqa: E402
+from flappy.rollout import make_env                                     # noqa: E402
+from game.flappy_env import PIPE_HEIGHT, PIPE_WIDTH, PLAYER_HEIGHT      # noqa: E402
+
+N_FRAMES = 1200
+SEED = 12345
+
+
+def chase_gap(e):
+    """朴素 bang-bang 控制，只为让轨迹覆盖更多管道，不追求成绩。"""
+    nxt = None
+    for u in e.upperPipes:
+        if u['x'] + PIPE_WIDTH > e.playerx:
+            nxt = u
+            break
+    if nxt is None:
+        return 0
+    center = nxt['y'] + PIPE_HEIGHT + nxt['gap'] / 2.0
+    return 1 if e.playery + PLAYER_HEIGHT / 2.0 > center else 0
+
+
+def snapshot(e, i, action, score, done, did_reset):
+    return {
+        "i": i, "action": action, "done": bool(done), "reset": bool(did_reset),
+        "playery": e.playery, "playerVelY": e.playerVelY,
+        "score": score, "basex": e.basex,
+        "upper": [{"x": p["x"], "y": p["y"], "gap": p["gap"]} for p in e.upperPipes],
+        "lower": [{"x": p["x"], "y": p["y"]} for p in e.lowerPipes],
+    }
+
+
+cfg = resolve_config()
+random.seed(SEED)
+env = make_env(cfg)
+env.reset()
+
+frames = []
+episodes = 1
+for i in range(N_FRAMES):
+    action = chase_gap(env)
+    obs, r, done, info = env.step(action, render=False)
+    # 快照必须在 reset **之前** 取：done 那一帧要记的是撞死时的状态，
+    # 不是重开后的状态。写反了会让比对在每个 done 帧上假报不一致
+    # （PY 记成 224/0/0 的重开值，JS 记的是崩溃值）。
+    frames.append(snapshot(env, i, action, info["score"], done, done))
+    if done:
+        # 立刻重开，让轨迹足够长以覆盖更多管道；顺带验证 reset 的一致性。
+        # reset 也会消费随机数，JS 端必须在比对完这一帧之后同样 reset，
+        # 两边的抽样顺序才对得上。
+        env.reset()
+        episodes += 1
+
+out = {
+    "meta": {
+        "seed": SEED, "n_frames": len(frames), "n_draws": len(_DRAWS),
+        "episodes": episodes,
+        "gap_range": list(cfg["pipe_gap_range"]),
+        "spacing_range": list(cfg["pipe_spacing_range"]),
+        "edge_margin": cfg["pipe_edge_margin"],
+        "max_delta_frac": cfg["pipe_max_delta_frac"],
+        "randomize": cfg["randomize_pipes"],
+        "pipe_gap": cfg["pipe_gap"],
+    },
+    "draws": _DRAWS,
+    "frames": frames,
+}
+dst = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trace.json")
+with open(dst, "w", encoding="utf-8") as f:
+    json.dump(out, f)
+print("wrote %s : %d frames, %d draws, %d episodes"
+      % (dst, len(frames), len(_DRAWS), episodes))
