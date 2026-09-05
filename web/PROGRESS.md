@@ -12,7 +12,7 @@
 - [ ] **阶段 1　游戏本体**
   - [x] `web/game.js`：物理与管道生成，逐条对照 `game/flappy_env.py`
   - [x] 种子化 PRNG（两只鸟必须共用同一组管道）
-  - [ ] Canvas 渲染：管道 / 小鸟 / 地面，黑底
+  - [x] Canvas 渲染：管道 / 小鸟 / 地面，黑底
   - [ ] 键盘 + 触摸控制，一键重开
   - [ ] **验收**：`web/tools/parity_game.md` 里记录同种子下 JS 与 Python 的管道序列比对结果
 - [ ] **阶段 2　AI 上场**
@@ -71,5 +71,32 @@
   `web/tools/parity_game.md`（阶段 1 的验收项）要做的事，目前还没做，
   `web/tools/` 目录也还没有那个文件。
   下一步：Canvas 渲染（管道 / 小鸟 / 地面，黑底）。
+
+- 2026-09-05：新增 `web/render.js`（`loadSprites()` + `Renderer` 类），
+  逐条对照 `game/flappy_env.py: _draw()` 的 blit 顺序（背景→管道→地面→小鸟）
+  和 `game/flappy_bird_utils.py` 的精灵加载（上管道 = pipe-green.png 旋转
+  180°，玩家动画 0/1/2 = upflap/midflap/downflap）。地面按 Python 的做法
+  单次 blit、不平铺（`base.png` 336px 比屏幕 288px 宽 48px，`basex` 取值
+  范围 `(-48, 0]` 天然铺满，和 Python 一致）。
+  精灵没有以 PNG 文件提交：仓库根 `.gitignore` 里 `*.png` 只给
+  `images/*.png` 开了例外，改 `.gitignore` 超出了这次改动被允许碰的范围
+  （只能改 `web/`、`plan.md`、`web/PROGRESS.md`）。绕开办法：写了
+  `web/assets/sprites-data.js`，把 6 张精灵（`background-black.png`、
+  `base.png`、`pipe-green.png`、`redbird-{up,mid,down}flap.png`，取自
+  仓库根 `assets/sprites/`）转成 base64 data URI 内嵌在 JS 里（原始
+  18KB，base64 后约 25KB，可忽略不计），`render.js` 从这个模块加载
+  `Image`，不再走独立 PNG 文件请求。
+  新增 `web/index.html` 作为渲染层的开发用冒烟测试页（**不是**最终的
+  控制/重开体验，那是下一个清单项要做的事）：canvas 288×512，空格/点击
+  扇翅，30 步/秒固定时间步物理 + `requestAnimationFrame` 渲染，死亡后
+  定格。用 Playwright（Node 版，`/opt/node22/lib/node_modules/playwright`，
+  Python 环境没装 playwright 包）起本地 `python3 -m http.server` 实测
+  截图验证：黑底背景、管道颜色/朝向正确（上管道确实是倒过来的）、小鸟
+  正常飞行/扇翅动画、地面滚动条纹正常、从两根管道之间飞过没有触发误碰撞、
+  以及不扇翅时小鸟正确坠地并在死亡帧定格（没有卡死或抛异常）。
+  控制台只有一条无害的 `favicon.ico 404`，没有其他错误。
+  下一步：键盘 + 触摸控制、一键重开（把 `index.html` 里现在这段临时的
+  开发用输入处理换成正式实现），然后补 `web/tools/parity_game.md` 的
+  Python/JS 管道序列比对（阶段 1 的验收项，目前还没做）。
 
 （每次运行在这里追加一行：日期 + 做了什么 + 下一步）

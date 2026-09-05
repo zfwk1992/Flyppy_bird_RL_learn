@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<title>Flappy Bird RL — 渲染冒烟测试</title>
+<style>
+  html, body { margin: 0; background: #111; color: #ddd; font-family: sans-serif; }
+  #wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 16px; }
+  canvas { background: #000; image-rendering: pixelated; border: 1px solid #444; }
+  p { max-width: 288px; font-size: 13px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="288" height="512"></canvas>
+  <p>
+    这是渲染层的开发用冒烟测试，<strong>不是</strong>最终的控制/重开体验
+    （那是下一个阶段清单项）。空格 = 扇翅。死亡后定格，刷新页面重来。
+  </p>
+</div>
+<script type="module">
+  import { FlappyGame } from './game.js';
+  import { loadSprites, Renderer } from './render.js';
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+
+  const sprites = await loadSprites();
+  const renderer = new Renderer(ctx, sprites);
+
+  // 固定种子只是为了让这次冒烟测试可复现；不是"种子化 PRNG"验收项的一部分
+  // （那个验收项要求两只鸟共用同一组管道，这里只有一只鸟）。
+  const game = new FlappyGame({ seed: 1 });
+
+  let flapQueued = false;
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') flapQueued = true;
+  });
+  canvas.addEventListener('pointerdown', () => { flapQueued = true; });
+
+  // 固定时间步物理（30 步/秒，对照 play.py 的实时观看帧率），渲染跟着
+  // requestAnimationFrame 走，两者解耦——这只是渲染冒烟测试的驱动方式，
+  // 真正的输入/循环设计留给下一个阶段清单项。
+  const STEP_MS = 1000 / 30;
+  let acc = 0;
+  let last = performance.now();
+
+  function tick(now) {
+    if (game.done) {
+      renderer.draw(game.observeState());
+      return; // 定格在死亡帧，不再排队下一次 rAF
+    }
+    acc += now - last;
+    last = now;
+    while (acc >= STEP_MS) {
+      const action = flapQueued ? 1 : 0;
+      flapQueued = false;
+      game.step(action);
+      acc -= STEP_MS;
+      if (game.done) break;
+    }
+    renderer.draw(game.observeState());
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+</script>
+</body>
+</html>
