@@ -28,7 +28,10 @@ import torch                                         # noqa: E402
 
 TRACE = os.path.join(HERE, 'trace_ai.json')
 DST = os.path.join(HERE, 'nn_ref.json')
-CKPT = os.path.join(ROOT, 'models', 'final_v1_best.pt')
+# 和 dump_python_trace.py 共用这个环境变量 —— 两个脚本必须指向同一份权重，
+# 否则下面那条“重放的动作要和 trace 一致”的断言会以很难读懂的方式失败。
+CKPT = os.environ.get('FLAPPY_WEB_CKPT',
+                      os.path.join(ROOT, 'models', 'final_v1_best.pt'))
 
 with open(TRACE, encoding='utf-8') as f:
     trace = json.load(f)
@@ -86,7 +89,7 @@ for i, ref in enumerate(frames_ref):
 flap = sum(d['action'] for d in decisions)
 out = {
     'meta': {
-        'source': 'trace_ai.json', 'checkpoint': 'models/final_v1_best.pt',
+        'source': 'trace_ai.json', 'checkpoint': os.path.basename(CKPT),
         'frame_skip': cfg['frame_skip'], 'frame_stack': cfg['frame_stack'],
         'n_decisions': len(decisions), 'n_flap': flap,
         'device': 'cpu',

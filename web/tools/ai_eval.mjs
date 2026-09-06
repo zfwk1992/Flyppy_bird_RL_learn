@@ -3,7 +3,7 @@
  *
  * game.js + obs.js + nn.js 三个模块都是浏览器直接 import 的同一份文件，
  * 这里只是换了个宿主。所以这条结果就是网页里的 AI 水平，不是近似。
- * （Python 侧 100 局的基线是 78.2 根，见 docs/EXPERIMENTS.md。）
+ * （Python 侧的基线：固定集 400 局 96.91 根，SE 3.93。）
  *
  * 决策时机与 flappy/rollout.py: skip_step 一致：每 frame_skip 帧决策一次，
  * 窗口内重复同一个动作；新回合用首帧填满帧栈。**不加任何反应延迟**，

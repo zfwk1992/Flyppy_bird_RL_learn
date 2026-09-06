@@ -90,7 +90,11 @@ if USE_MODEL:
     from flappy import checkpoint
     from flappy.rollout import FrameStack
     _dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    _net, _mcfg, _ = checkpoint.load_for_inference("models/final_v1_best.pt", _dev)
+    # 权重路径可以用环境变量覆盖。网页换模型时参考轨迹必须跟着重录，
+    # 否则 dump_nn_ref.py 里那条“重放出的动作要和 trace 记录的一致”的断言
+    # 必然失败 —— 不同权重在同一状态上本来就会选不同动作。
+    _ckpt = os.environ.get("FLAPPY_WEB_CKPT", "models/final_v1_best.pt")
+    _net, _mcfg, _ = checkpoint.load_for_inference(_ckpt, _dev)
     _stack = FrameStack(cfg["frame_stack"])
     _state = {"stack": None}
 

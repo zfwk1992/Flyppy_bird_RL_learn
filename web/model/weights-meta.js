@@ -6,7 +6,7 @@
  *   卷积权重 (out, in, kh, kw)，线性权重 (out, in)。
  */
 export const WEIGHTS_META = {
-  file: 'weights_fp16.bin',
+  file: 'weights_base_s0_fp16.bin',
   bytes: 2517318,
   input: { channels: 4, h: 80, w: 128 },
   fcHidden: 256,

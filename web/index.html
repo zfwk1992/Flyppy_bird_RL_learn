@@ -4,20 +4,20 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>You vs. a Deep-RL Agent &mdash; Flappy Bird</title>
-<meta name="description" content="Play against a Dueling Double-DQN trained from raw pixels only. It clears 78+ pipes on average; humans clear about 7. Same seed, same physics, right in your browser." />
+<meta name="description" content="Play against a Dueling Double-DQN trained from raw pixels only. It clears 97 pipes on average; humans clear about 7. Same seed, same physics, right in your browser." />
 <!-- OG/Twitter：og:image 用相对路径，指向仓库根 web/ 目录下的 assets/og-card.jpg。
      LinkedIn/Twitter/Facebook 的抓取器都会按 og:url（或页面自身 URL）解析相对路径，
      部署到 Cloudflare Pages 之后用 LinkedIn Post Inspector 走一遍确认即可，
      不需要在这里硬编码还没定下来的域名。见 web/DEPLOY.md。 -->
 <meta property="og:type" content="website" />
 <meta property="og:title" content="You vs. a Deep-RL Agent &mdash; Flappy Bird" />
-<meta property="og:description" content="Play against a Dueling Double-DQN trained from raw pixels only. It clears 78+ pipes on average; humans clear about 7." />
+<meta property="og:description" content="Play against a Dueling Double-DQN trained from raw pixels only. It clears 97 pipes on average; humans clear about 7." />
 <meta property="og:image" content="assets/og-card.jpg" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="You vs. a Deep-RL Agent &mdash; Flappy Bird" />
-<meta name="twitter:description" content="Trained entirely from pixels. 78.2 avg pipes for the AI vs 6.8 for humans. Try to beat it." />
+<meta name="twitter:description" content="Trained entirely from pixels. 96.9 avg pipes for the AI vs 6.8 for humans. Try to beat it." />
 <meta name="twitter:image" content="assets/og-card.jpg" />
 <style>
   :root {
@@ -124,16 +124,36 @@
   #learn .stat.you b { color: var(--you); }
   #learn .stat.ai b { color: var(--ai); }
 
-  .netdiag { display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
-    gap: 4px; margin: 14px 0; font-size: 10.5px; }
-  .netdiag .box { background: var(--panel); border: 1px solid var(--rule); border-radius: 5px;
-    padding: 6px 8px; text-align: center; color: var(--ink); line-height: 1.35; min-width: 54px; }
-  .netdiag .box small { display: block; color: var(--dim); font-size: 9.5px; }
-  .netdiag .arrow { color: var(--dim); font-size: 13px; }
-  .netdiag .heads { display: flex; flex-direction: column; gap: 4px; }
-  .netdiag .box.v { border-color: var(--you); }
-  .netdiag .box.a { border-color: var(--ai); }
-  .netdiag .box.q { border-color: var(--ink); }
+  /* ---- 图示 ----
+     讲解区原来是六段大段文字，读者在手机上要滚很久才看到"这网络长什么样"。
+     现在改成"一张图 + 一两句话"，图一律用内联 SVG：
+       - 内联才能继承上面 :root 的配色变量，换主题不用改几十个 fill；
+       - viewBox 定在 260~270 宽，配合 max-width 420px，在 320px 的手机上
+         缩放比约 1.1、在桌面上约 1.6，7~9px 的字号两头都还看得清。
+         （画得太宽会在手机上把字缩成 5px，这是最容易犯的错。） */
+  #learn figure { margin: 16px 0 18px; }
+  #learn figure svg { display: block; width: 100%; height: auto; max-width: 420px; margin: 0 auto; }
+  #learn figcaption { font-size: 11.5px; line-height: 1.5; color: var(--dim);
+    text-align: center; margin-top: 8px; }
+  #learn svg text { font-family: inherit; fill: var(--ink); }
+  #learn svg .t-dim { fill: var(--dim); }
+  #learn svg .t-you { fill: var(--you); }
+  #learn svg .t-ai  { fill: var(--ai); }
+  #learn svg .bx { fill: var(--panel); stroke: var(--rule); stroke-width: 1; }
+  #learn svg .bx-you { stroke: var(--you); }
+  #learn svg .bx-ai  { stroke: var(--ai); }
+  #learn svg .bx-ink { stroke: var(--ink); }
+  #learn svg .ln { stroke: var(--dim); stroke-width: 1; fill: none; }
+  #learn svg .ln-ai { stroke: var(--ai); }
+  /* 箭头头部画成小三角形而不是 <marker> —— marker 的 id 在同一个页面里
+     多个 SVG 之间会撞，画三角形没有这个问题。 */
+  #learn svg .hd { fill: var(--dim); stroke: none; }
+  #learn svg .hd-ai { fill: var(--ai); }
+
+  #learn .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+  #learn .chip { background: var(--panel); border: 1px solid var(--rule); border-radius: 999px;
+    padding: 4px 11px; font-size: 11px; color: var(--dim); }
+  #learn .chip b { color: var(--ink); font-weight: 600; }
 
   #learn footer.credits { border-top: 1px solid var(--rule); margin-top: 26px; padding-top: 14px; }
   #learn footer.credits a { color: var(--ai); }
@@ -183,130 +203,277 @@
   </footer>
 
   <section id="learn">
-    <h2><small>Reinforcement learning, briefly</small>What the agent actually sees</h2>
+    <h2><small>Input</small>It only ever sees pixels</h2>
+    <figure>
+      <svg viewBox="0 0 256 132" role="img"
+           aria-label="The 288 by 512 game screen is shrunk and thresholded into an 80 by 128 black-and-white image; four consecutive ones are stacked to form the network input.">
+        <!-- 游戏画面 -->
+        <rect class="bx" x="10" y="16" width="48" height="86" rx="3"/>
+        <rect x="26" y="16" width="10" height="28" fill="#3d5a34"/>
+        <rect x="26" y="62" width="10" height="40" fill="#3d5a34"/>
+        <rect x="44" y="16" width="10" height="44" fill="#3d5a34"/>
+        <rect x="44" y="78" width="10" height="24" fill="#3d5a34"/>
+        <circle cx="19" cy="58" r="3.5" fill="var(--you)"/>
+        <text class="t-dim" x="34" y="114" font-size="8" text-anchor="middle">288 &#215; 512</text>
+
+        <!-- 两行标注挤在箭头上方；间距是量出来的，缩到 34 以下会压到右边那个框 -->
+        <text class="t-dim" x="80" y="42" font-size="7.5" text-anchor="middle">shrink</text>
+        <text class="t-dim" x="80" y="52" font-size="7.5" text-anchor="middle">threshold</text>
+        <path class="ln" d="M62,60 H96"/>
+        <path class="hd" d="M101,60 l-6,-3.5 v7 z"/>
+
+        <!-- 二值观测 -->
+        <rect x="104" y="28" width="40" height="64" fill="#000" stroke="var(--rule)"/>
+        <rect x="116" y="28" width="8" height="20" fill="var(--ink)"/>
+        <rect x="116" y="59" width="8" height="33" fill="var(--ink)"/>
+        <rect x="133" y="28" width="7" height="32" fill="var(--ink)"/>
+        <rect x="133" y="75" width="7" height="17" fill="var(--ink)"/>
+        <rect x="108" y="57" width="4" height="4" fill="var(--ink)"/>
+        <text class="t-dim" x="124" y="104" font-size="8" text-anchor="middle">80 &#215; 128, 1 bit</text>
+
+        <text class="t-dim" x="165" y="52" font-size="7.5" text-anchor="middle">stack 4</text>
+        <path class="ln" d="M150,60 H179"/>
+        <path class="hd" d="M184,60 l-6,-3.5 v7 z"/>
+
+        <!-- 帧栈：后三张错开画在右下，最前面那张实心 -->
+        <rect x="206" y="38" width="40" height="64" fill="#0b0f0a" stroke="var(--rule)"/>
+        <rect x="200" y="32" width="40" height="64" fill="#0b0f0a" stroke="var(--rule)"/>
+        <rect x="194" y="26" width="40" height="64" fill="#0b0f0a" stroke="var(--rule)"/>
+        <rect x="188" y="20" width="40" height="64" fill="#000" stroke="var(--ink)"/>
+        <rect x="200" y="20" width="8" height="20" fill="var(--ink)"/>
+        <rect x="200" y="51" width="8" height="33" fill="var(--ink)"/>
+        <rect x="217" y="20" width="7" height="32" fill="var(--ink)"/>
+        <rect x="217" y="67" width="7" height="17" fill="var(--ink)"/>
+        <rect x="192" y="49" width="4" height="4" fill="var(--ink)"/>
+        <text class="t-dim" x="215" y="112" font-size="8" text-anchor="middle">4 &#215; 80 &#215; 128</text>
+        <text class="t-dim" x="215" y="123" font-size="7.5" text-anchor="middle">t&#8722;3 &#8230; t</text>
+      </svg>
+      <figcaption>
+        No coordinates, no velocity, no pipe distance &mdash; the same picture you
+        see, shrunk and flattened to one bit per pixel.
+      </figcaption>
+    </figure>
     <p>
-      The AI never receives your coordinates, your height, or the pipe distance as
-      numbers. Its only input is four stacked <code>80&times;128</code> black-and-white
-      frames &mdash; raw pixels, built from the same sprites and geometry that draw
-      the canvas on the right, just smaller and binary. No hand-engineered features:
-      velocity, gap position, everything it "knows" is inferred from how those four
-      frames differ from one another.
-    </p>
-    <p>
-      It commits to one of two actions &mdash; <em>flap</em> or <em>don't</em> &mdash;
-      every 4 frames, holding that choice for the whole window
-      (<code>frame_skip=4</code>, <code>frame_stack=4</code>). A single frame can't
-      even tell you which way the bird is moving; only the stack can.
+      One frame can't tell you which way the bird is moving, so the network reads
+      <strong>four</strong> at once. It commits to flap / don't every 4th frame and
+      holds it (<code>frame_skip=4</code>).
     </p>
 
-    <h2><small>The learning signal</small>Reward, and the Q-function</h2>
+    <h2><small>Objective</small>Three numbers, and a guess about the future</h2>
+    <figure>
+      <svg viewBox="0 0 270 148" role="img"
+           aria-label="The network sends an action to the game, the game returns four new frames; reward is plus one for clearing a pipe, minus one for dying, zero otherwise.">
+        <rect class="bx bx-ai" x="14" y="26" width="94" height="42" rx="5"/>
+        <text x="61" y="44" font-size="9.5" text-anchor="middle">Q-network</text>
+        <text class="t-dim" x="61" y="57" font-size="7.5" text-anchor="middle">takes the bigger Q</text>
+
+        <rect class="bx" x="162" y="26" width="94" height="42" rx="5"/>
+        <text x="209" y="44" font-size="9.5" text-anchor="middle">the game</text>
+        <text class="t-dim" x="209" y="57" font-size="7.5" text-anchor="middle">physics + pipes</text>
+
+        <text class="t-ai" x="135" y="30" font-size="8" text-anchor="middle">flap / don't</text>
+        <path class="ln ln-ai" d="M108,38 H152"/>
+        <path class="hd hd-ai" d="M157,38 l-6,-3.5 v7 z"/>
+
+        <path class="ln" d="M162,58 H123"/>
+        <path class="hd" d="M118,58 l6,-3.5 v7 z"/>
+        <text class="t-dim" x="140" y="72" font-size="8" text-anchor="middle">4 new frames + reward</text>
+
+        <rect class="bx" x="14" y="92" width="76" height="38" rx="5"/>
+        <text class="t-ai" x="52" y="112" font-size="15" font-weight="700" text-anchor="middle">+1</text>
+        <text class="t-dim" x="52" y="124" font-size="7.5" text-anchor="middle">clear a pipe</text>
+
+        <rect class="bx" x="97" y="92" width="76" height="38" rx="5"/>
+        <text class="t-you" x="135" y="112" font-size="15" font-weight="700" text-anchor="middle">&#8722;1</text>
+        <text class="t-dim" x="135" y="124" font-size="7.5" text-anchor="middle">die</text>
+
+        <rect class="bx" x="180" y="92" width="76" height="38" rx="5"/>
+        <text class="t-dim" x="218" y="112" font-size="15" font-weight="700" text-anchor="middle">0</text>
+        <text class="t-dim" x="218" y="124" font-size="7.5" text-anchor="middle">every other step</text>
+      </svg>
+      <figcaption>That is the entire reward function.</figcaption>
+    </figure>
     <p>
-      The reward is almost insultingly simple: <code>+1</code> for clearing a pipe,
-      <code>&minus;1</code> for dying, <code>0</code> otherwise. Everything the agent
-      does &mdash; every twitch of the wing &mdash; is in service of maximizing the
-      discounted sum of that signal over the rest of the episode.
-    </p>
-    <p>
-      It learns this through a <strong>Q-function</strong>, <code>Q(s,a)</code>:
-      "if I take action <code>a</code> right now, how much total future reward
-      should I expect?" Acting is then just picking the higher of the two numbers
-      every step &mdash; <code>argmax Q(s,&middot;)</code>. Training is
-      <strong>Double DQN</strong>: one network picks the action, a separate slowly-updated
-      target network scores it, which keeps the Q-values from drifting upward on
-      their own optimism.
+      From that, the network learns <code>Q(s,a)</code>: how much total future reward
+      it expects if it takes action <code>a</code> right now. Acting is just picking
+      the bigger of the two numbers. Training is <strong>Double DQN</strong> &mdash;
+      one network chooses, a slower copy scores &mdash; which curbs, though doesn't
+      eliminate, the optimism that makes a plain DQN over-value everything.
     </p>
 
-    <h2><small>Why the network has two heads</small>Value, advantage, and Q = V + A</h2>
+    <h2><small>Architecture</small>1,258,659 parameters</h2>
+    <figure>
+      <svg viewBox="0 0 260 296" role="img"
+           aria-label="Three convolutions reduce the 4 by 80 by 128 input to 64 by 6 by 12, which flattens to 4608, feeds a 256-unit fully connected layer, then splits into a one-output value head and a two-output advantage head recombined as Q equals V plus A minus mean A.">
+        <!-- 三层卷积：空间在缩，通道在长 -->
+        <rect class="bx" x="28" y="24" width="10" height="56"/>
+        <path class="ln" d="M31,24 V80 M34.5,24 V80"/>
+        <text class="t-dim" x="33" y="92" font-size="7.5" text-anchor="middle">4 ch</text>
+        <text class="t-dim" x="33" y="102" font-size="7.5" text-anchor="middle">80&#215;128</text>
+
+        <text class="t-dim" x="57" y="46" font-size="7" text-anchor="middle">8&#215;8 /4</text>
+        <path class="ln" d="M42,60 H67"/>
+        <path class="hd" d="M72,60 l-6,-3.5 v7 z"/>
+
+        <rect class="bx" x="76" y="44" width="20" height="32"/>
+        <path class="ln" d="M81,44 V76 M86,44 V76 M91,44 V76"/>
+        <text class="t-dim" x="86" y="92" font-size="7.5" text-anchor="middle">32 ch</text>
+        <text class="t-dim" x="86" y="102" font-size="7.5" text-anchor="middle">19&#215;31</text>
+
+        <text class="t-dim" x="115" y="46" font-size="7" text-anchor="middle">4&#215;4 /2</text>
+        <path class="ln" d="M100,60 H125"/>
+        <path class="hd" d="M130,60 l-6,-3.5 v7 z"/>
+
+        <rect class="bx" x="134" y="51" width="30" height="18"/>
+        <path class="ln" d="M141,51 V69 M148,51 V69 M155,51 V69"/>
+        <text class="t-dim" x="149" y="92" font-size="7.5" text-anchor="middle">64 ch</text>
+        <text class="t-dim" x="149" y="102" font-size="7.5" text-anchor="middle">8&#215;14</text>
+
+        <text class="t-dim" x="183" y="46" font-size="7" text-anchor="middle">3&#215;3 /1</text>
+        <path class="ln" d="M168,60 H193"/>
+        <path class="hd" d="M198,60 l-6,-3.5 v7 z"/>
+
+        <rect class="bx" x="202" y="53" width="30" height="14"/>
+        <path class="ln" d="M209,53 V67 M216,53 V67 M223,53 V67"/>
+        <text class="t-dim" x="217" y="92" font-size="7.5" text-anchor="middle">64 ch</text>
+        <text class="t-dim" x="217" y="102" font-size="7.5" text-anchor="middle">6&#215;12</text>
+
+        <!-- 走右边下来，避开上面那两行标注 -->
+        <path class="ln" d="M232,60 H244 V120"/>
+        <path class="hd" d="M244,126 l-3.5,-6 h7 z"/>
+
+        <rect class="bx" x="20" y="128" width="224" height="15" rx="2"/>
+        <text x="132" y="139" font-size="8" text-anchor="middle">flatten &#183; 4608</text>
+
+        <path class="ln" d="M132,145 V158"/>
+        <path class="hd" d="M132,164 l-3.5,-6 h7 z"/>
+
+        <rect class="bx" x="70" y="166" width="124" height="15" rx="2"/>
+        <text x="132" y="177" font-size="8" text-anchor="middle">fully connected &#183; 256</text>
+
+        <!-- 分成两个头 -->
+        <path class="ln" d="M132,183 V192 M62,192 H202 M62,192 V200 M202,192 V200"/>
+        <path class="hd" d="M62,206 l-3.5,-6 h7 z"/>
+        <path class="hd" d="M202,206 l-3.5,-6 h7 z"/>
+
+        <rect class="bx bx-you" x="24" y="208" width="76" height="30" rx="4"/>
+        <text class="t-you" x="62" y="223" font-size="9.5" text-anchor="middle">V(s)</text>
+        <text class="t-dim" x="62" y="233" font-size="7" text-anchor="middle">1 number</text>
+
+        <rect class="bx bx-ai" x="164" y="208" width="76" height="30" rx="4"/>
+        <text class="t-ai" x="202" y="223" font-size="9.5" text-anchor="middle">A(s, a)</text>
+        <text class="t-dim" x="202" y="233" font-size="7" text-anchor="middle">2 numbers</text>
+
+        <path class="ln" d="M62,238 V250 M202,238 V250 M62,250 H202 M132,250 V258"/>
+        <path class="hd" d="M132,264 l-3.5,-6 h7 z"/>
+
+        <rect class="bx bx-ink" x="42" y="266" width="180" height="26" rx="4"/>
+        <text x="132" y="278" font-size="9" text-anchor="middle">Q = V + A &#8722; mean(A)</text>
+        <text class="t-dim" x="132" y="288" font-size="7" text-anchor="middle">2 numbers &#8594; take the bigger one</text>
+      </svg>
+      <figcaption>
+        The picture shrinks, the channel count grows &mdash; the same conv shape
+        Mnih et&nbsp;al. used for Atari.
+      </figcaption>
+    </figure>
     <p>
-      Most frames don't matter. If the bird is centered in a gap with the next pipe
-      still far off-screen, flapping or not flapping barely changes the outcome &mdash;
-      what matters is the overall situation, captured by the <strong>state value</strong>
-      <code>V(s)</code>. Only in a narrow band of frames, right at a gap edge, does the
-      choice of action carry real weight &mdash; the <strong>advantage</strong>
-      <code>A(s,a)</code>.
+      No BatchNorm, no dropout. With a target network, anything that makes the
+      forward pass depend on the rest of the batch leaves the update rule with no
+      fixed point to converge to.
     </p>
-    <div class="netdiag">
-      <div class="box">shared conv+fc trunk</div>
-      <span class="arrow">&rarr;</span>
-      <div class="heads">
-        <div class="box v">V(s)<small>1 output</small></div>
-        <div class="box a">A(s,a)<small>2 outputs</small></div>
-      </div>
-      <span class="arrow">&rarr;</span>
-      <div class="box q">Q = V + A &minus; mean(A)</div>
+
+    <h2><small>Why two heads</small>Most frames don't need a decision</h2>
+    <figure>
+      <svg viewBox="0 0 256 152" role="img"
+           aria-label="Left: bird centred in a wide gap with the pipe still ahead, where either action is fine and the value head carries the information. Right: bird inside a narrow gap right at the lower lip, where the advantage head decides.">
+        <!-- 左：缝隙宽（52 高）、鸟居中，拍不拍都不会死 -->
+        <rect class="bx" x="26" y="8" width="64" height="100" rx="3"/>
+        <rect x="74" y="8" width="16" height="24" fill="#3d5a34"/>
+        <rect x="74" y="84" width="16" height="24" fill="#3d5a34"/>
+        <circle cx="44" cy="58" r="4.5" fill="var(--you)"/>
+        <text class="t-dim" x="58" y="126" font-size="8" text-anchor="middle">wide gap, still far</text>
+        <text class="t-you" x="58" y="139" font-size="8.5" text-anchor="middle">V(s) carries it</text>
+
+        <!-- 右：缝隙窄（22 高）、鸟贴着下沿，差一帧就撞 -->
+        <rect class="bx" x="166" y="8" width="64" height="100" rx="3"/>
+        <rect x="182" y="8" width="16" height="46" fill="#3d5a34"/>
+        <rect x="182" y="76" width="16" height="32" fill="#3d5a34"/>
+        <circle cx="174" cy="71" r="4.5" fill="var(--you)"/>
+        <text class="t-dim" x="198" y="126" font-size="8" text-anchor="middle">narrow gap, at the lip</text>
+        <text class="t-ai" x="198" y="139" font-size="8.5" text-anchor="middle">A(s, a) decides</text>
+      </svg>
+      <figcaption>
+        Two heads, so the value branch gets a gradient from every frame &mdash; not
+        only from whichever action happened to be played.
+      </figcaption>
+    </figure>
+    <p>
+      Subtracting <code>mean(A)</code> isn't polish. Without it, <code>V</code> and
+      <code>A</code> aren't pinned down by <code>Q</code> at all &mdash; add a
+      constant to one, subtract it from the other, and <code>Q</code> is unchanged
+      &mdash; so the two heads quietly drift apart during training.
+    </p>
+
+    <h2><small>The browser port</small>Checked, not assumed</h2>
+    <div class="chips">
+      <span class="chip"><b>1,200</b> observation frames, pixel-identical</span>
+      <span class="chip"><b>300</b> decisions, same action as PyTorch</span>
+      <span class="chip"><b>6&#215;10<sup>&#8722;3</sup></b> max Q deviation (fp16)</span>
     </div>
     <p>
-      Splitting the last layer into these two heads means the value branch learns
-      from <em>every</em> frame, regardless of which action was actually taken that
-      step &mdash; instead of only the played action getting a gradient, as in a
-      plain DQN. Subtracting the mean of <code>A</code> isn't optional polish: without
-      it, <code>V</code> and <code>A</code> aren't uniquely determined by <code>Q</code>
-      (add a constant to one, subtract it from the other, <code>Q</code> is unchanged),
-      and the two heads drift apart during training.
-    </p>
-
-    <h2><small>Architecture</small>1,258,659 parameters, no shortcuts</h2>
-    <p>
-      Three convolutions on the raw pixel stack &mdash; the same shape Mnih et al.
-      used for Atari &mdash; feeding a 256-unit fully-connected trunk, then the
-      value/advantage split above. No BatchNorm, no dropout.
-    </p>
-    <div class="netdiag">
-      <div class="box">input<small>4&times;80&times;128</small></div>
-      <span class="arrow">&rarr;</span>
-      <div class="box">conv 8&times;8/4<small>32ch</small></div>
-      <span class="arrow">&rarr;</span>
-      <div class="box">conv 4&times;4/2<small>64ch</small></div>
-      <span class="arrow">&rarr;</span>
-      <div class="box">conv 3&times;3/1<small>64ch</small></div>
-      <span class="arrow">&rarr;</span>
-      <div class="box">fc<small>256</small></div>
-    </div>
-    <p>
-      The browser version you're playing against loads exactly these weights
-      into a hand-written JavaScript forward pass &mdash; no ONNX runtime, no WASM
-      blob, so the entire download is the weights themselves (<code>fp16</code>,
-      2.52&nbsp;MB). 28&nbsp;ms per decision, against a 133&nbsp;ms budget.
-    </p>
-
-    <h2><small>Does it actually match the Python model?</small>Verified, not assumed</h2>
-    <p>
-      Porting a trained model to a hand-written JS re-implementation is exactly
-      the kind of change that silently degrades. So every layer of this port is
-      checked bit-for-bit against the original: 1,200 reconstructed observation
-      frames match the Python rendering pipeline pixel-for-pixel, and 300 sampled
-      decisions match the PyTorch model's action for action (max Q-value deviation
-      4&times;10&minus;3, from the fp16 weights). The parity harness ships in the
-      repo &mdash; <code>web/tools/</code> &mdash; and needs no Python to re-run.
+      This page runs a hand-written JavaScript forward pass &mdash; no ONNX runtime,
+      no WASM blob &mdash; so the entire download is the weights themselves
+      (<code>fp16</code>, 2.52&nbsp;MB). The parity harness ships in
+      <code>web/tools/</code> and needs no Python to re-run.
     </p>
 
     <h2><small>Results</small>How it actually plays</h2>
     <div class="stat-row">
-      <div class="stat ai"><b>78.2</b><span>Python eval &middot; 100 episodes</span></div>
-      <div class="stat ai"><b>86.4</b><span>this browser build &middot; 30 episodes</span></div>
+      <div class="stat ai"><b>96.9</b><span>PyTorch &middot; 400 episodes</span></div>
+      <div class="stat ai"><b>100.4</b><span>this browser build &middot; 40 episodes</span></div>
       <div class="stat you"><b>6.8</b><span>human baseline &middot; small sample</span></div>
     </div>
+    <figure>
+      <svg viewBox="0 0 260 80" role="img"
+           aria-label="Distribution of pipes cleared over 400 episodes: the middle half of the runs falls between 29 and 151, the median is 74, the mean 97, and the best run reached 258.">
+        <!-- 三个标注左右错开而不是上下堆叠：中位数和均值只差 19 个单位，
+             居中对齐的话两段文字必然压在一起。 -->
+        <text class="t-dim" x="79" y="25" font-size="7.5" text-anchor="end">median 74</text>
+        <text class="t-ai" x="106" y="25" font-size="7.5" text-anchor="start">mean 97</text>
+        <text class="t-dim" x="240" y="25" font-size="7.5" text-anchor="end">best 258</text>
+
+        <path class="ln" d="M148,42 H238 M238,36 V48"/>
+        <rect class="bx" x="44" y="32" width="104" height="20" rx="2"/>
+        <path d="M83,30 V54" stroke="var(--ink)" stroke-width="1.6" fill="none"/>
+        <path d="M102,30 V54" stroke="var(--ai)" stroke-width="1.4" fill="none"/>
+
+        <!-- 坐标轴单独画在下面。盒子左边不画须 —— 我们没测最小值，
+             画一条到 0 的须等于断言最小值是 0。 -->
+        <path class="ln" d="M20,60 H240 M20,60 V64 M105,60 V64 M189,60 V64"/>
+        <text class="t-dim" x="20" y="74" font-size="7.5" text-anchor="middle">0</text>
+        <text class="t-dim" x="105" y="74" font-size="7.5" text-anchor="middle">100</text>
+        <text class="t-dim" x="189" y="74" font-size="7.5" text-anchor="middle">200</text>
+        <text class="t-dim" x="248" y="74" font-size="7.5" text-anchor="end">pipes</text>
+      </svg>
+      <figcaption>
+        400 evaluation episodes. The box is the middle half of them; one run in
+        eleven never dies at all and gets cut off at the evaluation cap.
+      </figcaption>
+    </figure>
     <p>
-      Both numbers describe the same weights running two different code paths;
-      the gap between them (standard error 14.8) is noise, not a regression &mdash;
-      Flappy Bird scores are heavy-tailed (median 45.5, best run 322 pipes), so a
-      single average understates how often it either dies early or nearly never dies.
-      The human number comes from a small sample &mdash; take it as a rough sense of
-      scale, not a rigorous baseline.
+      Both AI numbers are the same weights down two different code paths. Flappy Bird
+      scores are close to geometric &mdash; the spread is as wide as the average
+      &mdash; so treat any single mean as &plusmn;20% unless it comes with a sample
+      size. The human figure is a small sample: a sense of scale, not a baseline.
     </p>
     <div class="callout">
       <p>
-        This is the same network architecture that, on an earlier version of the
-        training pipeline, plateaued at <strong>1.3 pipes</strong> after 100,000
-        episodes. The fix wasn't a better algorithm or more compute &mdash; it was
-        finding and closing about a dozen structural bugs in the data pipeline
-        (a terminal-state flag silently dropped 75% of the time, a target network
-        stuck in training mode, a reward scale that saturated the loss function).
-        Not every n-step or epsilon variant tried afterward helped either &mdash;
-        <code>n_step=3</code> made no measurable difference, and leaving just 1%
-        random actions in at evaluation time (&epsilon;=0.01 instead of 0) dropped
-        the measured score 6.2&times;. The write-ups for both the
-        failures and the fixes are in the repo.
+        This same architecture, on an earlier version of the training pipeline,
+        plateaued at <strong>1.3 pipes</strong> after 100,000 episodes. The fix wasn't
+        a better algorithm or more compute &mdash; it was about a dozen structural
+        bugs in the data path: a terminal-state flag silently dropped 75% of the time,
+        a target network left in training mode, a reward scale that saturated the
+        loss. The write-ups for the failures are in the repo alongside the fixes.
       </p>
     </div>
 
