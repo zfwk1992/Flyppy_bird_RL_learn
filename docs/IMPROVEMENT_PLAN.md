@@ -182,6 +182,16 @@ loss=0.024，和 ep 16500（92.1 根）的 11.35 / 0.114 / 0.029 完全无法区
 - **新增候选解释（不否定现有解释，是补充）**：*policy churn*
   （Schaul et al. 2022, `arxiv.org/abs/2206.00730`）指出 DQN 类算法的贪婪
   策略会在几次梯度更新内大范围改变推荐动作，根源是"动作差距小"——
+
+  > **⚠️ 引用口径修正（2026-09-06 核对原文摘要）**：这篇论文的标题是
+  > *The Phenomenon of Policy Churn*（Schaul, Barreto, Quan, Ostrovski），
+  > 引文内容属实（"a large fraction of states within a handful of learning
+  > updates"）。**但论文本身的主张是 churn 是"一种有益却被忽视的隐式探索"**
+  > （a beneficial but overlooked form of implicit exploration），
+  > 并不认为它是训练不稳定的病因。把它当成本项目现象 A 的**病因**
+  > 是我们的外推，**不是论文的结论**。这个外推可能对（震荡的表象确实吻合），
+  > 但不能引用这篇论文当作它的证据 —— 下面那条诊断（比较崩塌前后的
+  > action gap）跑出来之前，这条只是假设。
   这是一个**不依赖 buffer 淘汰**的现象 A 备选机制。如果本项目的崩塌主要是
   action gap 太小导致的策略抖动，那么 T1.3（保留死亡样本）可能治标不治本，
   T1.4/T2.1（降方差的目标网络手段）才是对症的。**诊断方法**：
