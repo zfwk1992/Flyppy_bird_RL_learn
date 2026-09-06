@@ -15,6 +15,7 @@ import numpy as np
 import torch
 
 from flappy import checkpoint
+from flappy.diagnostics import q_ceiling
 from flappy.rollout import evaluate
 
 
@@ -104,12 +105,15 @@ def main():
           % (res['truncated'], res['episodes']))
     print("  ep return     : %.4f" % res['return_mean'])
     if 'q_max_mean' in res:
-        # Q 有饱和上限：gamma^12.5 / (1 - gamma^7.2) ~= 12.6 (gamma=0.99,
-        # 管道间隔 7.2 次决策，生成到得分 12.5 次决策)。
+        # Q 有饱和上限：一个**永不死亡**的策略的 Q 值。原来这里写死成 ~12.6，
+        # 现在改成由 flappy/diagnostics.q_ceiling(cfg) 从配置算 —— 同一个量在
+        # 两个地方各写一份常数，迟早对不上（实测配置下算出来是 11.7 而不是 12.6）。
         # 所以 "Q ~ 0.9 x pipes" 这条经验规律只在低分段成立；
-        # 一个不死的策略 Q 会趋向 12.6，而不是趋向 pipes。
+        # 一个不死的策略 Q 会趋向这个上限，而不是趋向 pipes。
+        ceiling = q_ceiling(cfg)
         print("  mean max-Q    : %.3f   (low-score rule: ~0.9 x pipes; "
-              "ceiling for an immortal policy: ~12.6)" % res['q_max_mean'])
+              "ceiling for an immortal policy: ~%.2f  ->  %.0f%% of ceiling)"
+              % (res['q_max_mean'], ceiling, 100 * res['q_max_mean'] / ceiling))
         print("  mean |Q1-Q0|  : %.3f   (action preference strength; "
               "near 0 means the net cannot tell the actions apart)"
               % res['q_gap_abs_mean'])

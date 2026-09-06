@@ -20,6 +20,10 @@ TRAIN_FIELDS = ['grad_step', 'decision_step', 'loss', 'td_abs_mean', 'td_abs_max
                 'lr', 'epsilon', 'buffer_size', 'syncs', 'dec_per_s', 'grad_per_s']
 EVAL_FIELDS = ['episode', 'decision_step', 'n_eval_eps', 'eval_pipes_mean',
                'eval_pipes_std', 'eval_pipes_max', 'eval_len_mean']
+# 诊断列单独一个文件，见 flappy/diagnostics.py。
+# 不并进 eval.csv 是因为它们的语义不同：eval.csv 是"考了多少分"，
+# diag.csv 是"网络内部什么状态" —— 后者在成绩崩掉时才是唯一还有信号的东西。
+from .diagnostics import DIAG_FIELDS  # noqa: E402  (放这里是为了让字段定义只有一处)
 
 
 class CsvLogger:
@@ -61,6 +65,8 @@ class RunLogger:
         # 评测行很稀疏（每 500 局才一条），每行即刷，免得进程意外中断时全丢
         self.eval = CsvLogger(os.path.join(run_dir, 'eval.csv'), EVAL_FIELDS,
                               flush_every=1)
+        self.diag = CsvLogger(os.path.join(run_dir, 'diag.csv'), DIAG_FIELDS,
+                              flush_every=1)
 
     def say(self, msg):
         line = "[%s] %s" % (datetime.now().strftime('%H:%M:%S'), msg)
@@ -72,3 +78,4 @@ class RunLogger:
         self.episodes.close()
         self.train.close()
         self.eval.close()
+        self.diag.close()

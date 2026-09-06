@@ -23,7 +23,7 @@ from datetime import datetime
 import numpy as np
 import torch
 
-from flappy import checkpoint
+from flappy import checkpoint, diagnostics
 from flappy.agent import Agent
 from flappy.config import resolve_config
 from flappy.csvlog import RunLogger
@@ -107,6 +107,15 @@ def train(cfg, args):
     last_log_t = t_start
     acc = {k: 0.0 for k in Agent.STAT_KEYS}
     acc_n = 0
+
+    # ---- 诊断探针集：一次生成，之后永不改变 ----
+    # 必须固定，否则 argmax_flip 比的是状态不是策略。用不依赖网络的启发式
+    # 在固定 seed 上采集，见 flappy/diagnostics.py。
+    probe = diagnostics.build_probe_set(cfg, eval_env,
+                                        n_states=cfg['diag_probe_states'])
+    prev_argmax = None
+    log.say("diagnostics probe set: %d states (fixed for the whole run), "
+            "q ceiling ~= %.2f" % (len(probe), diagnostics.q_ceiling(cfg)))
 
     # ---- 首个回合 ----
     stacker = FrameStack(cfg['frame_stack'])
@@ -219,6 +228,17 @@ def train(cfg, args):
                                eval_pipes_std=round(res['pipes_std'], 3),
                                eval_pipes_max=res['pipes_max'],
                                eval_len_mean=round(res['len_mean'], 2))
+                # 网络内部诊断：成绩崩掉时这几列是唯一还有信号的东西
+                d, prev_argmax = diagnostics.compute(
+                    agent.online, probe, cfg, device, prev_argmax)
+                log.diag.write(episode=episode, decision_step=decision_step, **d)
+                say("diag @ep=%d: dorm_fc=%.1f%% eff95_fc=%d gap_med=%.3f "
+                    "tiny=%.1f%% q/ceil=%.2f flip=%s"
+                    % (episode, 100 * d['dorm_fc'], d['eff95_fc'],
+                       d['q_gap_median'], 100 * d['q_gap_tiny_frac'],
+                       d['q_ceil_ratio'],
+                       ('%.1f%%' % (100 * d['argmax_flip']))
+                       if d['argmax_flip'] != '' else 'n/a'))
                 say("eval @ep=%d: pipes=%.2f+-%.2f max=%d len=%.1f truncated=%d/%d"
                     % (episode, res['pipes_mean'], res['pipes_std'],
                        res['pipes_max'], res['len_mean'], res['truncated'],
