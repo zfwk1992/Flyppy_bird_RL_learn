@@ -32,9 +32,14 @@ sys.path.insert(0, ROOT)
 
 from flappy import checkpoint                                   # noqa: E402
 
-CKPT = os.path.join(ROOT, 'models', 'final_v1_best.pt')
-BIN = os.path.join(ROOT, 'web', 'model', 'weights_fp16.bin')
-META = os.path.join(ROOT, 'web', 'model', 'weights-meta.js')
+import argparse
+_ap = argparse.ArgumentParser()
+_ap.add_argument('--ckpt', default=os.path.join(ROOT, 'models', 'final_v1_best.pt'))
+_ap.add_argument('--tag', default='', help='非空时输出 weights_<tag>_fp16.bin / weights-meta-<tag>.js')
+_a = _ap.parse_args()
+CKPT = _a.ckpt
+BIN = os.path.join(ROOT, 'web', 'model', 'weights%s_fp16.bin' % (('_'+_a.tag) if _a.tag else ''))
+META = os.path.join(ROOT, 'web', 'model', 'weights-meta%s.js' % (('-'+_a.tag) if _a.tag else ''))
 
 # 顺序 = 前向顺序。改了这里必须同步改 web/nn.js 的解析顺序 ——
 # 所以偏移量写进元数据由 JS 按名字取，而不是两边各数一遍。
@@ -66,7 +71,7 @@ lines = [
     ' *   卷积权重 (out, in, kh, kw)，线性权重 (out, in)。',
     ' */',
     'export const WEIGHTS_META = {',
-    f"  file: 'weights_fp16.bin',",
+    f"  file: '%s'," % os.path.basename(BIN),
     f'  bytes: {offset},',
     f"  input: {{ channels: {cfg['frame_stack']}, h: {cfg['obs_w']}, w: {cfg['obs_h']} }},",
     f"  fcHidden: {cfg['fc_hidden']},",
