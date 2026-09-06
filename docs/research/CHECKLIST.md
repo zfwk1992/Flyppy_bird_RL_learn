@@ -1,249 +1,216 @@
-# 本机待办清单（2026-09-06 第一版生成，同日第二轮原样保留置顶）
+# 本机待办清单（2026-09-06 第三版重写）
 
-> **第二轮更新说明**：这是同一天内第二次跑这个定时任务（相隔约 5 小时）。
-> 云端看不到本机文件系统，无法判断 #1（画训练曲线）、#2（D0 固定 seed 集）
-> 是否已经做完——仓库里没有出现 `flappy/evalset.py`、没有
-> `docs/research/*.png`、`docs/EXPERIMENTS.md` 也没有新的固定集小节，
-> 按规矩**视为未完成**，所以下面 #1-#5 和上一版完全一样，原样保留置顶，
-> 不因为这轮检索到新东西就冲掉。**如果你本机已经做完 #1 或 #2，
-> 请在完成后自己把对应结果按"结果回填到"那一行的要求写进目标文件，
-> 下一轮云端会看到文件存在就知道已完成，从清单里去掉。**
+> **这一版和前两版的关系**：前两版的 #1（画训练曲线/D2）、#2（D0 固定评测集）
+> 已经在本机做完并合入主分支（提交 `51151da`、`b139f60`、`d577edc`）。
+> 云端这次能直接从 `docs/IMPROVEMENT_PLAN.md`、`docs/EXPERIMENTS.md`、
+> `docs/research/UPGRADE_ANALYSIS.md` 里读到证据，**不需要再靠"仓库里有没有
+> 出现某个文件"去猜有没有做完**——而且本机这期间做的事情比前两版清单预想的
+> 多得多：不仅完成了 D0/D2，还做完了 D3（配对回测三个存档）和网络内部诊断
+> （`experiments/netdiag_dormant.py`），**查到了根因是可塑性丢失**（休眠单元/
+> 有效秩塌缩/动作差距塌缩），写了完整分析 `docs/research/UPGRADE_ANALYSIS.md`，
+> 并且已经把诊断量接进了训练循环（`flappy/diagnostics.py`，提交 `1dd848d`，
+> 产出 `runs/<run>/diag.csv`）。
 >
-> 这轮检索确实找到了一些新证据（Data-Efficient Rainbow 的 n=20、
-> 独立小规模 PER 复现里"更小 buffer 反而更好"），已经写进
-> `docs/IMPROVEMENT_PLAN.md` 的 T1.2/T1.3/T3.2 对应小节，但这些都是
-> **Tier 1 候选方案的补充说明，不是新的本机任务**——T1.2/T1.3 本身还没
-> 排上号，因为 D0（下面 #2）还没做完，所有 A/B 对比在那之前都不可信。
-> 所以这轮没有新增第 6 条，仍然是 5 条，排序不变。
+> 前两版清单里的 #1-#5 **不再重复列出**——它们描述的工作全部已完成或已被
+> 更精确的后续工作取代。这一版的清单完全对应**下一步**：diag.csv 刚接好，
+> 还没有一次真实的长训练跑过它（只有 `--smoke` 到 ep2000 的自检），
+> 所以当前最靠前的开放问题是**验证 UPGRADE_ANALYSIS.md 因果链的最后一环**
+> （"动作差距塌缩 → argmax 翻转 → 分数震荡"）以及**运行间方差**（D4，
+> 至今没测过——D3 量的是同一次训练内部的峰谷差异，不是独立重跑的方差）。
 >
-> 排序即优先级。**#1 和 #2 互不依赖，可以并行/任选先后；#3、#4 依赖 #2 先完成。**
-> #5 是一条设计建议，不紧急，供你判断要不要现在做。
+> 排序即优先级，**最多 4 条 + 1 条不紧急的设计提醒**。#1 是硬前置——
+> 没有真实的 diag.csv，#2/#3 都无法进行。#3 依赖 #1/#2 的结果支持因果链
+> 才值得投入（如果 #2 显示相关性方向不对，先回来重新想，不要盲目上 LayerNorm）。
 
 ---
 
-## ✅ #1 已完成（2026-09-06 本机）—— 结论推翻了原来的"崩塌"判断
+## #1【现成脚本，但耗时很长——这是这轮最重要的一条】跑 2 个新种子的基线训练，
+## 同时拿到 D4（运行间方差）和第一份真实 diag.csv
 
-**做了什么**：三个 csv 都还在（`runs/final_v1/{episodes,train,eval}.csv`）。
-直接读 `eval.csv`（39 行贪婪评测）并对齐 `train.csv` 的 Q 统计，没画图 ——
-`.gitignore` 挡住 `*.png` 和 `runs/`，图提交不了，数字抄进文档更有用。
+**背景**：`docs/research/UPGRADE_ANALYSIS.md` 第五节自己写的执行顺序第一步就是
+"先加诊断日志（不改算法），跑 2 个 seed 的基线——这同时解决了 D4"。诊断日志
+已经加完了（`1dd848d`），**这一步现在可以直接做，不需要再写代码**。
 
-**回答了 #1 的三个问题**：
+D3 的配对比较（`best.pt` vs `resume_1.pt` vs `resume_0.pt`）量化的是**同一次
+训练内部**峰谷之间的方差（3.7 倍），这**不是** D4 要问的"独立重跑多个 torch
+seed 之间的方差"——两者是不同的量，不要混着当同一件事已经做完。
+`UPGRADE_ANALYSIS.md` 第四节明确把这个缺口列为"可能落空的地方"：如果两次
+同配置训练本来就差 2 倍，那么后面任何"LayerNorm/ReDo 有没有用"的结论都读不出来。
 
-1. **不是平滑下降，也不是某一段突然掉下去 —— 是来回震荡。**
-   ep17000 = 26.0 根 → ep18000 = **104.8 根（回到峰值）** → ep18500 = 33.4
-   → ep19500 = 59.2。峰谷 3–4 倍反复摆动。`resume_0`(ep19831) 的 24.2 根
-   是**采样到了波谷**，"多练 4300 局掉到三分之一"这个描述本身是误导。
-2. **Q 值没有先发散，也没有跳变。** q_mean 平滑 7.27→12.41，q_max 8.33→13.32。
-   **分数掉 3.5 倍的那几个点，Q 统计和分数最高的点完全无法区分。**
-3. **`td_abs_mean` 和 `loss` 没有异常尖峰**，全程 0.10 / 0.02–0.03。
-
-**因此指向**：不是价值高估/灾难性遗忘（signature 是 Q 发散 + 不可逆退化，
-两条都不满足），而是**策略层面的震荡** —— 即 IMPROVEMENT_PLAN T1.4 里
-新加的 policy churn 那条候选解释。**T1.3 做法 1（扩 buffer）的优先级应下调，
-T1.4 / T2.1（EMA 目标网络、Averaged-DQN）上调。**
-
-**还发现一件计划里没提的事**：20 局评测的标准误高达 **±25**。而 `best.pt`
-的门控挂在同样很吵的 `recent100_pipes` 上 —— 被选中的"最佳"存档有多少是
-真的更好、多少只是运气好，目前不知道。这让 #2（D0）比原来更重要。
-
-**结果已回填**：`docs/IMPROVEMENT_PLAN.md` 第 0 节 A（整段重写 + 数据表）
-和第 5.2 节。
-
----
-
-## ~~#1（原文保留，供对照）~~ 画训练曲线，看崩塌是渐变还是突变
-
-**背景**：IMPROVEMENT_PLAN.md 的 D2 要回答"崩塌是渐变还是突变？max-Q 是否在
-崩塌前先发散？"——这直接决定后面该冲 buffer 策略（T1.3）还是目标网络方差
-（T1.4/T2.1）。这份数据**可能已经躺在你本机的 `runs/final_v1/` 目录里**，
-不需要任何新代码、任何新训练：训练时每 500 局会写一行贪婪评测（`eval.csv`），
-每 100 个梯度步会写一行 loss/Q 值（`train.csv`），`plot.py` 已经能直接画。
-
-**先检查文件还在不在**（`.gitignore` 挡住了 `runs/`，本地清理过的话可能已经没了）：
+**跑什么**（和 `EXPERIMENTS.md` 里 final_v1 的训练命令完全一样，只换 seed 和
+run-dir；`--seed` 会同时播种 `random`/`numpy`/`torch`，和评测用的固定
+`eval_seed_base` 互不干扰）：
 
 ```bash
-ls runs/final_v1/*.csv
+python train.py --buffer 60000 --max-hours 6 --seed 1 --run-dir runs/diag_seed1
+python train.py --buffer 60000 --max-hours 6 --seed 2 --run-dir runs/diag_seed2
 ```
 
-- 如果三个 csv（`episodes.csv` / `train.csv` / `eval.csv`）都在，跑：
-
-  ```bash
-  python plot.py runs/final_v1 --out docs/research/final_v1_diagnostics.png
-  ```
-
-  大概几秒钟。**看什么算成功**：
-  1. `eval.csv` 里 `eval_pipes_mean` 这条曲线在 ep15493 附近（当时的 `best.pt`）
-     到 ep19831 附近（`resume_0`）之间是**平滑下降**还是**某一小段突然掉下去**？
-  2. 同一段时间窗口里 `train.csv` 的 `q_max` / `q_mean` 有没有先于分数下降
-     开始发散或者跳变？如果 Q 值先发散，指向价值高估/崩塌；如果 Q 值稳定
-     但分数掉了，更像是策略层面的问题（比如 policy churn，见 IMPROVEMENT_PLAN
-     T1.4 里新加的那条候选解释）。
-  3. 顺手看一眼 `td_abs_mean` 和 `loss` 在这段窗口有没有异常尖峰。
-
-- 如果 csv 已经不在了：这条数据永久丢失了，不用补救，直接跳到 #5，
-  并在下次真正训练时把这份诊断纳入起跑前检查清单。
-
-**结果回填到**：`docs/IMPROVEMENT_PLAN.md` 第 1 节 D2 那一行的"产出"列，
-贴曲线截图或者关键数字（哪个 episode 附近开始掉、Q 值曲线什么形状），
-以及 `docs/research/NOTES-2026-09-06.md` 末尾补一段。
-
----
-
-## ✅ #2 已完成（2026-09-06 本机）—— D0 固定评测集已实现并合入
-
-**提交**：`51151da  D0: 固定评测集 —— 逐局播种，让跨存档比较第一次真正可比`
-
-云端读出来的那个缺陷属实，本机核实过：`eval.py` 只在第 54 行播一次种，
-`evaluate()` 的循环里确实没有重播种。已修：
-
-- `flappy/rollout.py: evaluate()` 新增 `seed_base`，第 i 局在 `env.reset()`
-  之前用 `seed_base + i` 播种
-- **探索噪声改走独立的 `random.Random`** —— 否则 epsilon>0 时同一局内不同模型
-  抽到的随机动作次数不同，管道照样错位（`sample_random_action` 加了可选 `rng`）
-- **`finally` 里恢复全局随机状态** —— 否则训练中每 500 局一次的评测会劫持
-  训练自己的随机流
-- `eval.py` 默认开启（`--no-fixed-set` 回旧行为，`--seed-base` 可指定），
-  `train.py` 的定期评测和收尾评测也用上了
-- 配置项 `eval_seed_base=20260906` 在 `flappy/config.py`
-
-**新增单测** `test_fixed_eval_set_is_policy_independent`（第 12 个，共 13 个）。
-它不只验"修好了"，还验**老做法确实会分歧**——实测从第 2 局开始——
-否则这个测试没有鉴别力。
-
-**验证**：13 个单测全过；`train.py --smoke --allow-cpu` 跑到 ep2046，
-定期评测走新路径正常（`eval @ep=2000: pipes=19.65`），评测后训练继续出新 best，
-说明随机流确实被还原了。`eval.py` 连跑两次同一存档，结果逐位相同。
-
-**⚠️ 一个必须知道的代价**：固定集上的绝对分数是"这一组关卡上的分数"，
-**不等于整个分布上的期望**。此前文档里那些 78.2 / 94.5 / 86.4 是**浮动关卡**
-上测的，和今后固定集上的数字**不能直接对比**。今后所有比较都应该在
-同一个 `seed_base` 下做配对比较。
-
-**因此 #3 和 #4 的前置已经解除，可以开跑了。**
-
----
-
-## ~~#2（原文保留，供对照）~~ D0：修好评测的"固定 seed 集"
-
-**背景**：读代码（不是猜测）确认了 `flappy/rollout.py: evaluate()` 现在
-每局只调用一次 `env.reset()`，**不会逐局重新播种**，管道生成用的是全局
-`random` 模块。哪怕命令行传了固定 `--seed`，只要两个模型的存活局长不同
-（几乎总是不同），从第 2 局起消耗的随机数数量就不同，管道序列会**错位**——
-固定 seed 现在只保证第 1 局可比。**这是 IMPROVEMENT_PLAN.md 全部工作里
-优先级最高的一条，不修它后面所有 A/B 对比都不可信。**
-
-`web/tools/death_attribution.mjs` / `ai_eval.mjs` 已经用对的方式做了这件事：
-每一局单独 `new FlappyGame({ seed: BASE + ep })`。Python 侧要照抄同一个模式。
-
-**要写的代码**（在本机、不在这次云端会话里做，因为 `flappy/` 和 `eval.py`
-是仓库锁定不让云端改的文件）：
-
-1. 新建 `flappy/evalset.py`：定义一个固定的 seed 列表（建议 200 个，
-   比如 `list(range(5000, 5200))`——刻意和这次云端跑的
-   `death_attribution.mjs`/`ai_eval.mjs` 用的基数 5000 保持一致，方便以后
-   直接和 JS 侧的结果对表）。
-2. 改 `flappy/rollout.py: evaluate()`（或者新写一个不改现有函数、只加一个
-   新入口的版本，看你觉得哪个更不容易破坏现有调用方）：加一个可选的
-   `episode_seeds` 参数，若提供，则每局开始前 `random.seed(s); np.random.seed(s)`
-   再 `env.reset()`，s 取 `episode_seeds[i]`。
-3. 改 `eval.py` 加 `--fixed-set` 开关，打开时从 `flappy/evalset.py` 读 seed
-   列表传给 `evaluate()`，替代当前的单次全局 `--seed`。
-4. 跑 `python test/test_env_and_buffer.py` 确认 11 个单测还过（改了
-   `rollout.py` 必须过这一步，这是仓库硬性要求）。
-
-**大概要跑多久**：写代码 + 调试，看你熟练程度，几十分钟到一两小时；
-不是一个"跑脚本等结果"的任务。
-
-**看什么算成功**：用 `--fixed-set` 对同一个 `models/final_v1_best.pt`
-跑两次 `--episodes 100`，**两次结果必须逐位相同**（不止均值一样，
-每一局的比分都要一样）——这是"真固定"和"看起来固定但没固定"的区别。
-
-**结果回填到**：`flappy/evalset.py` 本身就是产出；跑通后把验证结果
-（两次 100 局逐位相同的证明，或者截图/校验和）记一笔到
-`docs/EXPERIMENTS.md`（新起一节，格式参考现有条目）。
-
----
-
-## #3【依赖 #2】用固定 seed 集重新评一遍现存的存档，把 D3 的"崩塌点"钉死
-
-**背景**：IMPROVEMENT_PLAN.md 原来设想的 D3 是"把 `runs/final_v1/` 里所有
-周期存档都评一遍"，但读 `train.py` 发现**这不现实**——本项目只有三类存档：
-`best.pt`（门控触发时才存，本次训练只有 ep15493 那一次触发）、
-`resume_0.pt`/`resume_1.pt`（每 30 分钟双槽轮转，只保留最新两份，
-更早的会被覆盖冲掉）、`final.pt`（收尾时存一次）。所以能拿到的最多就是
-**3-4 个时间点**，不是一条密集曲线。**这是对原计划 D3 描述的一处修正**：
-数量有限，但仍然值得跑——目的从"画完整曲线"降级为"用干净的配对比较
-确认崩塌确实发生、且发生在什么范围"。
-
-**先看 `runs/final_v1/` 里实际还剩什么**：
-
-```bash
-ls -la runs/final_v1/*.pt
-```
-
-**跑什么**（`--fixed-set` 是 #2 做完之后才有的开关）：
-
-```bash
-python eval.py runs/final_v1/best.pt --fixed-set --episodes 100 --q-stats
-python eval.py runs/final_v1/resume_1.pt --fixed-set --episodes 100 --q-stats   # 如果还在
-python eval.py runs/final_v1/resume_0.pt --fixed-set --episodes 100 --q-stats
-python eval.py runs/final_v1/final.pt --fixed-set --episodes 100 --q-stats      # 如果还在
-```
-
-**大概要跑多久**：每条 100 局贪婪评测，参考 `death_attribution.mjs` 的速度
-（约 14 秒/局），Python+torch 大概率更快，估计每条几分钟，四条合计
-15-30 分钟。
-
-**看什么算成功 / 怎么解读**：
-
-- 拿到的每个存档的 `pipes_mean / pipes_median / pipes_std`，**用固定集
-  的结果去对比 EXPERIMENTS.md 里已经记过的旧数字**（best.pt 78.2 / resume_0
-  24.2，那两个数字不是固定 seed 集测的）——如果新旧数字差很多，
-  说明旧结论本身就有一部分是测量噪声，不是真的崩塌那么剧烈；
-  如果新旧数字量级一致，说明崩塌是真实存在、不是噪声，前一份结论站得住。
-- 三四个点连起来，看崩塌是"单调掉"还是"先掉后有反弹又掉"。
-
-**结果回填到**：`docs/IMPROVEMENT_PLAN.md` 第 5 节新起一小节
-"5.2 固定 seed 集下的多存档回测"，以及更新 `docs/EXPERIMENTS.md`
-final_v1 那一节（标注"以下用固定 seed 集重测"，不要覆盖旧数字，
-两份并排放，方便看差异）。
-
----
-
-## #4【依赖 #2，可以和 #3 一起跑】检验"policy churn"是不是崩塌的另一个原因
-
-**背景**：这次检索找到一个 IMPROVEMENT_PLAN.md 之前没有的候选解释——
-policy churn（Schaul et al. 2022）：DQN 类算法的贪婪策略会因为"动作差距小"
-而在几次梯度更新内大范围抖动，这是一个**不依赖 buffer 淘汰**的现象 A
-备选机制。已经写进 `docs/IMPROVEMENT_PLAN.md` T1.4 那一条。
-
-`eval.py --q-stats` 已经会打印 `mean |Q1-Q0|`（动作差距）——如果 #3 已经跑了
-`--q-stats`，这条不需要重新跑，直接对比 #3 四个存档输出里的
-`mean |Q1-Q0|` 那一行即可。
+**大概要跑多久**：参照 final_v1 的实测速率（4.5 小时 / 19850 局 / 233 万决策步，
+约 51.8 万决策步/小时），`--max-hours 6` 封顶。两次可以顺序跑（总共最多约
+12 小时）；如果显卡显存够、想并行跑两个进程也可以，两边 `--run-dir` 不同不会
+冲突。**这条没有办法压缩时间**——UPGRADE_ANALYSIS 里观察到的震荡发生在
+ep15000-19500 这个晚期区间，跑得太短根本进不到这个阶段，diag.csv 也就看不到
+真正的震荡对不对得上诊断量。如果时间实在紧张，**先跑一个种子也比不跑强**，
+第二个种子可以留到下一轮。
 
 **看什么算成功**：
 
-- 如果动作差距从 best.pt 到 resume_0 **明显缩小**（比如掉了一半以上），
-  支持 policy churn 是崩塌的重要成分，T1.4/T2.1（降方差的目标网络手段）
-  优先级应该继续维持在前面。
-- 如果动作差距基本不变，崩塌更可能纯粹是 buffer 淘汰死亡样本导致的
-  Q 值失去下界约束，T1.3（保留死亡样本专池）的针对性更强。
-- 两者都变化不大 / 都变化很大，如实记录"没有区分开"，不要强行下结论。
+1. **D4（运行间方差）**：两次跑（可以的话，连同 final_v1 原来的 seed=0 一起）
+   在训练末期的固定集配对评测（跑完后用 `eval.py --fixed-set --episodes 100`
+   评每次跑的 `final.pt`/`best.pt`）比较中位数和 IQR。如果三次跑的"最终表现"
+   区间本身就跟 D3 观测到的峰谷差异（3.7 倍）同量级，说明后面任何算法改动的
+   "提升"都可能只是抽到了好种子，必须先把这个不确定性钉死再谈优化。
+2. **diag.csv 的时间序列**：训练进入利用期后，`dorm_fc`、`eff95_fc`、
+   `q_gap_median`、`q_ceil_ratio`、`argmax_flip` 随 episode 的变化曲线，
+   和同一份 `eval.csv` 的 `eval_pipes_mean` 曲线放在一起看——分数掉的那几个
+   点，这几个诊断量是不是同步变差。**不需要在这一步就下结论**，只需要把数据
+   跑出来，下一条（#2）会自动做这个比较。
 
-**结果回填到**：`docs/IMPROVEMENT_PLAN.md` T1.4 那条新加的"诊断方法"段落，
-把结论写在后面。
+**结果回填到**：`docs/IMPROVEMENT_PLAN.md` D4 那一行（运行间方差的具体数字）
+以及第 5 节新增"5.4 运行间方差（D4）"小节；两份 `diag.csv`/`eval.csv` 的路径
+记一笔，供 #2 使用。
 
 ---
 
-## #5【设计建议，不紧急】下次正式训练前，给周期性存档留一份不会被冲掉的历史
+## #2【代码已经写好、已自测——本机只需要跑】用新脚本验证"塌缩 → 翻转 → 震荡"
+## 这条因果链最后一环
 
-这不是本轮要跑的命令，是提醒：`resume_0.pt`/`resume_1.pt` 的双槽轮转设计
-是为了"断点续训"服务的，天然不适合拿来做"崩塌发生在哪一步"的事后取证——
-更早的中间状态会被覆盖冲掉。如果 #1 发现 `runs/final_v1/` 的 csv 已经丢了，
-或者 #3 发现能用的存档只剩 1-2 个，那么这条判断（"密集回测崩塌曲线"）
-在这次训练上已经无法达成，**只能等下一次正式训练跑起来的时候**，
-提前想好要不要额外存一份不覆盖的周期快照（比如每 2000 局存一个
-`ckpt_ep{N}.pt`，成本是多占硬盘，换来的是这次拿不到的"分数-步数"曲线）。
-这个决定留给你，不在这轮清单里定死——如果不想改 `train.py`，
-`eval.csv` 每 500 局一条本身已经是一种轻量级的替代方案，只是这次
-不确定文件还在不在（见 #1）。
+**背景**：`UPGRADE_ANALYSIS.md` 自己说得很清楚——"动作差距塌缩 → argmax 翻转"
+这一步"还没有直接验证"，目前的证据只是"休眠/秩塌缩"和"分数震荡"**同时发生**，
+不构成因果证明。这一条云端已经把分析代码写好并自测过了：
+
+新增 `experiments/analyze_diag_vs_score.py`（文件头第一行已注明"未在本机验证"，
+只依赖 numpy，不 import torch/pygame）。**云端已经跑过它的自测**（构造合成数据，
+不依赖真实训练数据），输出如下：
+
+```
+=== 自测 1/3：spearman 实现在已知数据上的表现 ===
+强正相关样本 -> r=0.998（预期接近 +1）
+强负相关样本 -> r=-0.998（预期接近 -1）
+无关样本     -> r=0.050（预期接近 0）
+=== 自测 2/3：并列值（ties）处理 ===
+完全相同（含并列）的两列 -> r=1.000（预期接近 +1）
+=== 自测 3/3：csv 读取 + episode 对齐 + 端到端相关性方向 ===
+/tmp/xxx: 8 个配对点（按 episode 对齐，eval.csv 共 8 行，diag.csv 共 8 行）
+指标                 spearman r        符合预期
+dorm_fc                -1.000           是
+eff95_fc                1.000           是
+q_gap_median            0.000           否
+q_ceil_ratio            0.000           否
+argmax_flip             0.000           否
+全部自测通过。
+```
+（后三项判定"否"是因为自测数据里这三列全是常数、没有构造相关性，脚本正确地
+没有瞎报相关——这正是自测要验证的行为：不构造相关性就不该看到相关性。）
+
+**跑什么**（依赖 #1 产出的 `diag.csv`/`eval.csv`）：
+
+```bash
+python3 experiments/analyze_diag_vs_score.py runs/diag_seed1
+python3 experiments/analyze_diag_vs_score.py runs/diag_seed2
+```
+
+**大概要跑多久**：几秒钟，纯 CPU 读 csv 算相关系数。
+
+**看什么算成功**：`dorm_fc`/`eff95_fc`/`q_gap_median`/`q_ceil_ratio`/
+`argmax_flip` 和 `eval_pipes_mean` 的 spearman 相关系数符号是否和
+`UPGRADE_ANALYSIS.md` 假设的方向一致（休眠越多分数越低、有效秩越高分数越高、
+动作差距越大分数越高、越贴近"永不死"上限分数越低、翻转越频繁分数越低）。
+**配对点数大概率只有 10-40 个**（`eval_every_episodes=500`，一次训练几万局），
+spearman 在这个样本量下噪声很大——**只看符号方向，不要报具体数值当结论**，
+符号一致算"支持因果链"，符号不一致或接近零算"这条链在这个尺度上站不住"，
+如实记录，不要为了让故事完整而选择性解读。
+
+**结果回填到**：`docs/research/UPGRADE_ANALYSIS.md` 第一节新增"1.4 因果链的
+直接验证"小节，把两个种子的相关系数表格贴进去，并且明确写这一步是**支持**了
+还是**没有支持**因果链——如果没支持，`docs/IMPROVEMENT_PLAN.md` T1.4 里
+"这条尚未验证"那句话要改成"验证结果是……"，不能放着不管。
+
+---
+
+## #3【依赖 #1/#2 结果，需要写代码】如果因果链得到支持，实现 LayerNorm 并配对比较
+
+**只有 #2 显示相关性方向基本符合预期时才做这一步**——如果 #2 的结果说因果链
+站不住，先停下来重新想，不要跳过诊断直接上改动（这正是 IMPROVEMENT_PLAN.md
+第 1 节反复强调的"没有这一步，后面任何 A/B 对比都读不出信号"）。
+
+**要写的代码**（`UPGRADE_ANALYSIS.md` 第三节①已经给出设计，且**已经本机验证过**
+批次无关性等三项性质，只是原型代码没有提交，需要重新落地进 `flappy/model.py`
+之类的文件）：
+
+1. 卷积层后插 `nn.GroupNorm(1, C)`（等价于在 C,H,W 上做 LayerNorm，不依赖
+   batch，满足 Bellman 算子需要的批次无关性），fc 层后插 `nn.LayerNorm`。
+2. 跑 `test/test_env_and_buffer.py` 里的 `assert_deterministic`，确认新架构
+   仍然通过——这是仓库硬性要求（CLAUDE.md 第 2 条的字面意思是禁止
+   BatchNorm/Dropout，`UPGRADE_ANALYSIS.md` 已经论证 LayerNorm 不违反这条
+   背后的原因，但**验证步骤不能省**）。
+3. **顺手加一个几乎零成本的对照组**（本轮检索新增的弱证据候选，见
+   `docs/IMPROVEMENT_PLAN.md` T2.4）：给 `torch.optim.Adam` 加一个可选的
+   `betas` 覆盖（比如 CLI 加 `--adam-betas 0.9 0.9`），在跑 LayerNorm 对照的
+   同时也跑一组 `betas=(0.9, 0.9)` 的对照，成本只是多一次训练，不需要专门
+   为这条弱证据单独设计实验。**这条证据强度弱（两篇来源都只读到摘要转述，
+   互相还有矛盾），不要因为加了这个对照就推迟 LayerNorm 本身的验证。**
+
+**跑什么**（配对用同一个 seed，和 #1 的某一次基线做直接对比）：
+
+```bash
+python train.py --buffer 60000 --max-hours 6 --seed 1 --run-dir runs/layernorm_seed1
+python eval.py runs/layernorm_seed1/final.pt --fixed-set --episodes 100 --q-stats
+python eval.py runs/diag_seed1/final.pt --fixed-set --episodes 100 --q-stats   # baseline 对照
+```
+
+**大概要跑多久**：训练本身和 #1 同量级（几小时），评测各几分钟。
+
+**看什么算成功**：
+
+- 训练末期 `dorm_fc`/`never_fc` 显著低于 baseline（#1 的对应种子）——
+  这是"LayerNorm 有没有真的复活休眠单元"的直接判据。
+- 固定集 100 局的中位数/25 分位数**不低于** baseline（主要图稳，不图涨，
+  `UPGRADE_ANALYSIS.md` 已经说清楚"峰值不一定提高，要买的是峰值之后不塌"）。
+- `argmax_flip` 曲线是否比 baseline 更平。
+- 差距小于 2 个标准误一律记作"没有区别"，失败也要写进 `EXPERIMENTS.md`。
+
+**结果回填到**：`docs/EXPERIMENTS.md` 新增一节（格式参考 `n-step` 那条失败
+记录的写法），以及 `docs/research/UPGRADE_ANALYSIS.md` 第三节①标注验证结果。
+
+---
+
+## #4【不紧急，设计/资源规划提醒】接下来几轮都需要多次几小时训练，提前规划
+
+这不是一条要跑的命令，是提醒：#1、#3，以及 `UPGRADE_ANALYSIS.md` 后续还要做的
+ReDo + EMA（第三节②③），每一条要出干净的配对结果都得跑至少一次几小时的完整
+训练。累积起来是好几个"过夜跑"量级的工作，不是一次坐下来就能做完的。建议：
+
+- 如果硬件允许（多 GPU 或显存够跑两个进程），#1 的两个种子可以并行跑，
+  节省一半时间。
+- 每次开新训练前确认磁盘够放（`runs/` 不进 git，但每次跑的 `episodes.csv`/
+  `train.csv`/`eval.csv`/`diag.csv` 加上 `resume_0.pt`/`resume_1.pt`/
+  `best.pt`/`final.pt` 存档，几个跑下来也有几十 GB，`--buffer 60000`
+  本身占约 3.1GB 显存，和磁盘占用是两回事）。
+- 云端完全无法核实 `docs/IMPROVEMENT_PLAN.md` T2.4（Adam β 匹配 / weight
+  clipping）那两篇来源的原始论文——`openreview.net`、`arxiv.org`、
+  `rlj.cs.umass.edu` 在云端环境全部被出口代理拦截，只读到 WebSearch 摘要
+  转述和一份 GitHub README。如果本机能正常访问这些网站，**建议人工核对一遍
+  原文的消融数字**，因为目前这条候选的证据强度全靠转述，云端没有能力再深挖。
+
+---
+
+## 已完成，不再重复发（供核对，不是待办）
+
+- ✅ D0：固定评测 seed 集（`flappy/rollout.py: evaluate(seed_base=...)`，
+  提交 `51151da`）
+- ✅ D2：训练曲线复盘，推翻"单向崩塌"判断，改判"3-4 倍震荡"
+  （`docs/IMPROVEMENT_PLAN.md` 第 0 节 A、第 5.2 节）
+- ✅ D3：三个存档在固定集上的配对回测（`best.pt`/`resume_1.pt`/`resume_0.pt`，
+  `docs/IMPROVEMENT_PLAN.md` 第 5.3 节）
+- ✅ 网络内部诊断：`experiments/netdiag_dormant.py`，查到根因是可塑性丢失
+  （休眠单元 47%→73%、有效秩 44→22、动作差距中位 1.10→0.32），完整分析见
+  `docs/research/UPGRADE_ANALYSIS.md`
+- ✅ 诊断日志接入训练循环：`flappy/diagnostics.py` + `runs/<run>/diag.csv`
+  （提交 `1dd848d`），`--smoke` 到 ep2000 验证过管线通（`dorm_fc=0.4%
+  eff95_fc=91 gap_med=1.160 q/ceil=0.15`），**但还没有一次真实长训练跑过它**
+  ——这正是这版清单 #1 要做的事
+- ✅ 死亡归因（B：评测期方差）：两批独立 25-30 局都指向策略脆弱而非任务太难
+  （`docs/IMPROVEMENT_PLAN.md` 第 5.1 节），**这个方向目前证据已经足够，
+  不需要更多样本量，不再列入清单**

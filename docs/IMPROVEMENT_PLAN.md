@@ -101,15 +101,16 @@ loss=0.024，和 ep 16500（92.1 根）的 11.35 / 0.114 / 0.029 完全无法区
 
 | # | 做什么 | 为什么 | 产出 |
 |---|---|---|---|
-| **D0** | **固定评测 seed 集**：写死 200 个 seed，所有评测都用同一批 | 现在每次评测抽不同的随机序列，光测量噪声就 ±11 根。**不修这个，后面所有结论都不可信。** 这是全部工作里性价比最高的一条 | `flappy/evalset.py` + `eval.py --fixed-set` |
+| **D0** ✅ | **固定评测 seed 集**：写死 200 个 seed，所有评测都用同一批 | 现在每次评测抽不同的随机序列，光测量噪声就 ±11 根。**不修这个，后面所有结论都不可信。** 这是全部工作里性价比最高的一条 | `flappy/evalset.py` + `eval.py --fixed-set` |
 | | ↳ **实现细节（2026-09-06 读代码确认，不是猜测）**：`flappy/rollout.py: evaluate()` 每局只调用一次 `env.reset()`，**不会逐局重新播种**；管道生成用的是全局 `random` 模块。所以就算命令行传了固定 `--seed`，只要两个模型存活局长不同（几乎总是不同），从第 2 局起消耗的随机数量就不同，管道序列会**错位**——"固定 seed"只保证了第 1 局可比。必须像 `web/tools/*.mjs` 那样**逐局独立播种**（`random.seed(BASE+i); np.random.seed(BASE+i)` 再 `reset()`），而不是只在评测开始时播一次种。 | 见 `docs/research/NOTES-2026-09-06.md` §3 |
 | **D1** | 死亡归因（工具已就绪） | 分清 A/B，见上 | `web/tools/death_attribution.mjs` |
-| **D2** | 训练曲线复盘：画 `runs/final_v1/train.csv`（loss/max-Q/td_abs）和 `eval.csv`（每 500 局一条的贪婪评测）随步数的变化 | 崩塌是渐变还是突变？max-Q 是否在崩塌前先发散？这直接决定是 buffer 问题还是目标网络问题。**`plot.py` 现成能画，不用写新代码**——前提是 `runs/final_v1/` 这几个 csv 本机还在（`.gitignore` 挡住了 `runs/`，有没有被清理过不确定） | 一张图 + 一段结论 |
-| **D3** | **多存档回测**：把 `runs/final_v1/` 里所有周期存档在 D0 的固定 seed 集上各评 100 局 | 得到"成绩 vs 训练步数"的真实曲线，而不是训练时那个带探索的 recent100。崩塌点在哪一步一目了然 | 曲线 + 崩塌步数 |
-| | ↳ **范围修正（2026-09-06 读 `train.py` 确认）**：本项目**没有**密集的周期存档可回测——只有 `best.pt`（门控触发才存，final_v1 这次只触发过一次）、`resume_0.pt`/`resume_1.pt`（30 分钟双槽轮转，只保留最新两份，更早的已被覆盖冲掉）、`final.pt`。**能拿到的最多 3-4 个时间点，不是一条密集曲线。** D3 的目标从"画完整曲线"降级为"用固定 seed 集给现存的这几个存档做一次干净的配对比较"；真正密集的"分数-步数"曲线其实已经躺在 `eval.csv` 里（D2 那一行），不需要重新评存档。下次正式训练如果想要更密的事后回测点，需要额外存不会被覆盖的周期快照——这是给下一次训练的建议，不是这轮要做的事。 | 见 `docs/research/CHECKLIST.md` #1、#3、#5 |
-| **D4** | 训练间隔性重跑同一次实验（换 torch seed，跑 3 次） | 量化**运行间**方差。如果三次训练的最终成绩本来就差 2 倍，那么单次实验的任何"改进"都不可信 | 3 条曲线 |
+| **D2** ✅ | 训练曲线复盘：画 `runs/final_v1/train.csv`（loss/max-Q/td_abs）和 `eval.csv`（每 500 局一条的贪婪评测）随步数的变化 | 崩塌是渐变还是突变？max-Q 是否在崩塌前先发散？这直接决定是 buffer 问题还是目标网络问题。**`plot.py` 现成能画，不用写新代码**——前提是 `runs/final_v1/` 这几个 csv 本机还在（`.gitignore` 挡住了 `runs/`，有没有被清理过不确定） | 一张图 + 一段结论 |
+| **D3** ✅ | **多存档回测**：把 `runs/final_v1/` 里所有周期存档在 D0 的固定 seed 集上各评 100 局 | 得到"成绩 vs 训练步数"的真实曲线，而不是训练时那个带探索的 recent100。崩塌点在哪一步一目了然 | 曲线 + 崩塌步数 |
+| | ↳ **范围修正（2026-09-06 读 `train.py` 确认）**：本项目**没有**密集的周期存档可回测——只有 `best.pt`（门控触发才存，final_v1 这次只触发过一次）、`resume_0.pt`/`resume_1.pt`（30 分钟双槽轮转，只保留最新两份，更早的已被覆盖冲掉）、`final.pt`。**能拿到的最多 3-4 个时间点，不是一条密集曲线。** D3 的目标从"画完整曲线"降级为"用固定 seed 集给现存的这几个存档做一次干净的配对比较"；真正密集的"分数-步数"曲线其实已经躺在 `eval.csv` 里（D2 那一行），不需要重新评存档。**2026-09-06 已完成**：三个存档（`best.pt`/`resume_1.pt`/`resume_0.pt`）在固定集上配对评测完毕，结果见第 5.3 节和 `research/UPGRADE_ANALYSIS.md`——根因定位为可塑性丢失（休眠单元/秩塌缩/动作差距塌缩），不是单纯的 buffer 淘汰。下次正式训练如果想要更密的事后回测点，需要额外存不会被覆盖的周期快照——这是给下一次训练的建议，不是已完成工作的一部分。 | 见 `docs/research/UPGRADE_ANALYSIS.md` |
+| **D4** ⚠️部分完成 | 训练间隔性重跑同一次实验（换 torch seed，跑 3 次） | 量化**运行间**方差。如果三次训练的最终成绩本来就差 2 倍，那么单次实验的任何"改进"都不可信 | 3 条曲线 |
+| | ↳ **进展**：D3 的配对比较（`best.pt`/`resume_1`/`resume_0`）量化的是**同一次训练内部**峰谷之间的方差（3.7 倍），**不是**独立重跑多个 torch seed 的运行间方差——这是两个不同的量，D4 原本要问的"运行间方差"**仍未测过**。`docs/research/UPGRADE_ANALYSIS.md` 第四节明确把这个缺口列为"可能落空的地方"之一：如果两次同配置训练本来就差 2 倍，任何"改进"都读不出来。**现在有了诊断日志（`flappy/diagnostics.py`，提交 `1dd848d`），下一次填这个坑时应该顺带跑，一次训练同时拿到 D4 的数据点和验证 UPGRADE_ANALYSIS 因果链需要的 diag.csv。** 见 `docs/research/CHECKLIST.md` #1。 | |
 
-**D0 和 D3 是硬前置。** 在它们完成之前不要开始试第 2 节的任何方案。
+**D0、D3 已完成。当前硬前置是 D4 未做的部分（运行间方差）——第 2 节任何方案的"有没有效"结论，在测过运行间方差之前都不能排除"只是抽到了好种子"这个混淆因素。**
 
 ---
 
@@ -233,6 +234,38 @@ loss=0.024，和 ep 16500（92.1 根）的 11.35 / 0.114 / 0.029 完全无法区
 - 成本：中（要改网络结构和 `assert_deterministic` —— 注意评测时必须固定噪声，
   否则又变成随机策略，正是 CLAUDE.md 第 2 条在防的那类 bug）
 - 验收：固定集均值不降，且训练早期的爬升更快
+
+#### T2.4 Adam β1=β2 匹配 + Weight Clipping【弱证据，成本极低，可以搭车测，不能替代主线】
+
+**2026-09-06 第三轮检索新增，不是本项目实测。** 一篇 *Overcoming Policy
+Collapse in Deep Reinforcement Learning*（OpenReview，NeurIPS 2023 投稿，
+未找到 arxiv 版本）主张：Adam 默认的 β1=0.9/β2=0.999 在数据分布非平稳时会
+让二阶矩估计"记性太长"，分布一旦漂移就产生突然的大幅权重跳变——即使梯度本身
+很小。这和本项目 UPGRADE_ANALYSIS.md 里"极小数值扰动就能翻转 argmax"的观察
+在现象上相似，但**是完全不同的机制解释**（一个是优化器矩估计失配，一个是
+可塑性丢失/秩塌缩），两者不互斥，可能同时存在。
+
+- 提出的修法：把 β1、β2 设成同一个值（摘要提到的例子是都设成 0.99）。
+- **一条自相矛盾的转述**：另一篇 *Weight Clipping for Deep Continual and
+  Reinforcement Learning*（Elsayed et al., RLC 2024）的搜索摘要提到"β1=β2=0.99
+  之后 policy collapse 仍然很快发生"，转而提出权重裁剪
+  `clip(w, -k/sqrt(fan_in), +k/sqrt(fan_in))`（`k` 默认 1.0，直接从
+  `github.com/mohmdelsayed/weight-clipping` 的 README 读到，非转述）作为
+  更有效的方案，且摘要提到测过 DQN。
+- **证据强度：弱**。两篇的核心机制描述都只来自 WebSearch 摘要转述，openreview.net
+  和 arxiv.org 在本环境都被拦截，没有读到任何一手消融数字，甚至两篇之间那条
+  "互相矛盾"本身是否在同一实验设置下也不确定。**唯一直接读到原始内容的是
+  weight clipping 的公式本身**（README），不是它的效果验证。
+- **本项目现状**：`flappy/agent.py` 构造 `Adam` 时没有传 `betas`，用的是
+  PyTorch 默认 `(0.9, 0.999)`——如果上面机制成立，本项目一直处在这个坑里，
+  从未测过关掉它的效果。`adam_eps=1.5e-4` 已经避开了另一个已知的 Adam 坑
+  （见 `flappy/config.py` 注释），这条是同一个优化器上的另一个独立旋钮。
+- **优先级**：不要单独占用一轮训练去验证这条——证据强度不足以支撑单独立项。
+  **建议搭车**：如果本机在跑 T1.4（EMA 目标网络）或 UPGRADE_ANALYSIS①
+  （LayerNorm）的配对训练时，顺手加一组 `betas=(0.9, 0.9)` 的对照（一行改动，
+  几乎不增加实验设计成本），观察诊断量（尤其 `argmax_flip`）有没有变化。
+  **不要因为这条而推迟已经有本项目自己实测支撑的 LayerNorm/ReDo/EMA 主线。**
+  详见 `docs/research/NOTES-2026-09-06.md` §1.12/1.13。
 
 #### T2.3 多种子训练取中位
 不是算法改进，是**结论的可信度**。跑 3 个 torch seed，报中位而不是最好那次。
@@ -410,3 +443,6 @@ node web/tools/death_attribution.mjs 30
 - [Predictive PER: Balancing Priority and Diversity](https://arxiv.org/pdf/2011.13093) —— 优先级陈旧/outlier 问题
 - [Understanding Multi-Step Deep RL: A Systematic Study of the DQN Target](https://arxiv.org/abs/1901.07510) —— 小规模 off-policy n-step 消融
 - [The Phenomenon of Policy Churn](https://arxiv.org/abs/2206.00730) —— 现象 A 的候选替代机制
+- [The Primacy Bias in Deep Reinforcement Learning](https://arxiv.org/abs/2205.07802) —— 周期性部分重置思路的源头论文
+- [Overcoming Policy Collapse in Deep Reinforcement Learning](https://openreview.net/forum?id=m9Jfdz4ymO) —— T2.4，Adam β1/β2 失配假说，未读到原文
+- [Weight Clipping for Deep Continual and Reinforcement Learning](https://arxiv.org/abs/2407.01704) —— T2.4，权重裁剪，公式已核实，效果未核实
