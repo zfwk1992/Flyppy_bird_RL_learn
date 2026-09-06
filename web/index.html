@@ -647,13 +647,17 @@ function endRound() {
   $('youRounds').textContent = String(count.rounds);
   $('aiOutlasted').textContent = `${count.aiOutlasted}/${count.rounds}`;
 
-  // 玩家已经出局，worker 可以腾出手去算下一局了。当前这一局的计划不再往前
-  // 补 —— 死的时候手上还有约 LOOKAHEAD 帧（20 秒）的余量，够 AI 在你犹豫的
-  // 这几秒里继续飞。
-  if (worker) {
-    prefetch = { seed: randomSeed(), plan: [], ended: false };
-    worker.postMessage({ type: 'start', seed: prefetch.seed, want: LOOKAHEAD });
-  }
+  // 这里**不能**去预取下一局。曾经这么干过，是个真 bug：玩家一撞就让 worker
+  // 掉头算下一局，当前这局的计划就此断流，AI 只能飞完手头存货然后**卡死在半空**。
+  // 当时的注释写着"死的时候还有约 LOOKAHEAD 帧余量"——那个假设只在开发机上成立。
+  // 真机上 worker 一次决策约 150~270 ms，而消耗要 133 ms/次，缓冲区常年接近空，
+  // 所以玩家一死 AI 就停在一两根管子之后。"你掉下去之后看着它继续飞"是这个 demo
+  // 的情绪支点，断流等于把它删掉。
+  //
+  // headless 测不出来这个：CDP 的 setCPUThrottlingRate **不节流 worker 线程**，
+  // 测试里 worker 全速跑，缓冲区一直很厚。是真机才暴露的。
+  //
+  // 预取改到 AI 也撞了之后再做（见 stepBoth）——那时 worker 才真的空出来。
 
   const summary = aiAlive
     ? `<b>You crashed at ${you.score}</b>`
@@ -712,10 +716,16 @@ function stepBoth() {
       $('aiVeil').hidden = false;
       $('aiVeil').innerHTML = `<b>The AI crashed at ${aiGame.score}</b>`
         + (youAlive ? '<span>you are still flying</span>' : '');
+      // AI 这一局结束了，计划不用再补，worker 空出来 —— 现在才去预跑下一局的
+      // 开头，让玩家点"再来一局"的时候不至于从零等起。
+      if (worker && !prefetch) {
+        prefetch = { seed: randomSeed(), plan: [], ended: false };
+        worker.postMessage({ type: 'start', seed: prefetch.seed, want: LOOKAHEAD });
+      }
     }
-    // 让 worker 始终保持大约 LOOKAHEAD 的余量。玩家已经出局的话就不再要了 ——
-    // 那时 worker 正在算下一局，别把它拽回来。
-    if (worker && !planEnded && youAlive && plan.length - aiFrame < LOOKAHEAD / 2) {
+    // 让 worker 始终保持大约 LOOKAHEAD 的余量。**玩家死了也要继续要** ——
+    // AI 还在飞就还在消耗计划，断了它就会卡在半空。
+    if (worker && !planEnded && plan.length - aiFrame < LOOKAHEAD / 2) {
       worker.postMessage({ type: 'want', seed: planSeed, want: aiFrame + LOOKAHEAD });
     }
   }
