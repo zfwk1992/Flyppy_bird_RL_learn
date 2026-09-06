@@ -147,6 +147,23 @@ export function survivesLookahead(game, firstAction, N, ctorOpts, dims) {
 }
 
 /**
+ * 与 survivesLookahead 同一套物理前瞻，但返回"实际撑了几步"（0..N，
+ * N 表示 N 步全部活下来），而不是布尔安全/不安全。
+ *
+ * 用途（实验 B，`lookahead_saturation.mjs`）：当两个动作在 N 步内都被判定
+ * "不安全"时，与其直接退回启发式，不如比较两个分支谁撑得更久——这本身
+ * 就是对"两个都不安全"这个退化情形的一次更细粒度的打分，不需要额外假设。
+ */
+export function survivalSteps(game, firstAction, N, ctorOpts, dims) {
+  const g = cloneGame(game, ctorOpts);
+  if (g.step(firstAction).done) return 0;
+  for (let i = 1; i < N; i++) {
+    if (g.step(chaseGap(g, dims)).done) return i;
+  }
+  return N;
+}
+
+/**
  * 前瞻 oracle 的决策函数：两个动作都做安全检查，
  * 都安全就退回启发式的选择；只有一个安全就选那个；
  * 两个都不安全（N 步内必死无法避免）就退回启发式（死马当活马医）。
