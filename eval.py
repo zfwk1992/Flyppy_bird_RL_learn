@@ -98,11 +98,26 @@ def main():
         print("  eval set      : FIXED seed_base=%d (episode i uses %d+i) "
               "-- paired comparison across checkpoints is valid"
               % (seed_base, seed_base))
-    print("  pipes mean    : %.3f +- %.3f" % (res['pipes_mean'], res['pipes_std']))
-    print("  pipes median  : %.1f    max: %d" % (res['pipes_median'], res['pipes_max']))
+    # 报**区间**不要只报点估计。分数近似几何分布（每根管道死亡风险大致恒定），
+    # 标准差约等于均值，所以 n 局评测的标准误约 = 均值/sqrt(n)。
+    import math
+    se = res['pipes_std'] / math.sqrt(max(res['episodes'], 1))
+    print("  pipes mean    : %.2f  +- %.2f (SD)   SE = %.2f  -> 95%% CI 约 [%.1f, %.1f]"
+          % (res['pipes_mean'], res['pipes_std'], se,
+             res['pipes_mean'] - 1.96 * se, res['pipes_mean'] + 1.96 * se))
+    print("  quartiles     : q25 %.1f   median %.1f   q75 %.1f   max %d"
+          % (res['pipes_q25'], res['pipes_median'], res['pipes_q75'],
+             res['pipes_max']))
+    print("  iqm           : %.2f   (对离群值稳健的交叉验证；判据仍看 mean)"
+          % res['pipes_iqm'])
     print("  ep len (dec)  : %.1f  (cap %d)" % (res['len_mean'], res['max_decisions']))
-    print("  hit the cap   : %d / %d episodes (still alive when stopped)"
-          % (res['truncated'], res['episodes']))
+    if res['truncated']:
+        print("  hit the cap   : %d / %d episodes  ->  mean is BIASED LOW; "
+              "censoring-corrected mean = %.2f"
+              % (res['truncated'], res['episodes'], res['pipes_censored_mean']))
+    else:
+        print("  hit the cap   : 0 / %d episodes (no censoring bias)"
+              % res['episodes'])
     print("  ep return     : %.4f" % res['return_mean'])
     if 'q_max_mean' in res:
         # Q 有饱和上限：一个**永不死亡**的策略的 Q 值。原来这里写死成 ~12.6，

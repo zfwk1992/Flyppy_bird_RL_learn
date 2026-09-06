@@ -95,7 +95,10 @@ def train(cfg, args):
     # ---- 状态 ----
     decision_step = 0
     episode = 0
-    best_recent100 = -float('inf')
+    # 门控状态：best_screen 是便宜的筛选阈值，best_confirmed 是真正决定
+    # 落盘的确认分数（在另一批关卡上测的）。见定期评测那一段。
+    best_screen = -float('inf')
+    best_confirmed = -float('inf')
     last_best_episode = -10 ** 9
     recent_pipes = deque(maxlen=100)
     recent_returns = deque(maxlen=100)
@@ -200,20 +203,6 @@ def train(cfg, args):
                     % (episode, decision_step, agent.grad_steps, agent.syncs,
                        eps, r100, len(buffer), time.time() - t_start))
 
-            # ---- 最佳模型：门控在平滑指标上，且带冷却 ----
-            # 旧代码把 max_score 放在每局都执行的分支里重新赋值，20000 局后
-            # 阈值恒为 0，于是每个正分局都是"新纪录" —— 触发了 31182 次 58MB
-            # 存盘，却从未保存过任何真正意义上的最佳模型。
-            if (episode >= 500 and len(recent_pipes) == 100
-                    and r100 > best_recent100 * 1.02
-                    and episode - last_best_episode >= 100):
-                best_recent100 = r100
-                last_best_episode = episode
-                checkpoint.save_best(os.path.join(run_dir, 'best.pt'),
-                                     agent, cfg, r100, episode, decision_step)
-                say("new best: recent100_pipes=%.3f at ep=%d -> best.pt"
-                    % (r100, episode))
-
             # ---- 定期评测 ----
             if cfg['eval_every_episodes'] and episode % cfg['eval_every_episodes'] == 0:
                 # seed_base 固定 => 每次评测跑的是**同一组关卡**，于是 eval.csv
@@ -227,7 +216,14 @@ def train(cfg, args):
                                eval_pipes_mean=round(res['pipes_mean'], 3),
                                eval_pipes_std=round(res['pipes_std'], 3),
                                eval_pipes_max=res['pipes_max'],
-                               eval_len_mean=round(res['len_mean'], 2))
+                               eval_len_mean=round(res['len_mean'], 2),
+                               eval_pipes_iqm=round(res['pipes_iqm'], 3),
+                               eval_pipes_median=round(res['pipes_median'], 2),
+                               eval_pipes_q25=round(res['pipes_q25'], 2),
+                               eval_pipes_q75=round(res['pipes_q75'], 2),
+                               eval_truncated=res['truncated'],
+                               eval_pipes_censored=round(
+                                   res['pipes_censored_mean'], 3))
                 # 网络内部诊断：成绩崩掉时这几列是唯一还有信号的东西
                 d, prev_argmax = diagnostics.compute(
                     agent.online, probe, cfg, device, prev_argmax)
@@ -239,10 +235,49 @@ def train(cfg, args):
                        d['q_ceil_ratio'],
                        ('%.1f%%' % (100 * d['argmax_flip']))
                        if d['argmax_flip'] != '' else 'n/a'))
-                say("eval @ep=%d: pipes=%.2f+-%.2f max=%d len=%.1f truncated=%d/%d"
-                    % (episode, res['pipes_mean'], res['pipes_std'],
-                       res['pipes_max'], res['len_mean'], res['truncated'],
-                       cfg['eval_episodes']))
+                say("eval @ep=%d: mean=%.2f (q25-q75 %.0f-%.0f) median=%.1f "
+                    "iqm=%.1f max=%d truncated=%d/%d censored_mean=%.1f"
+                    % (episode, res['pipes_mean'], res['pipes_q25'],
+                       res['pipes_q75'], res['pipes_median'], res['pipes_iqm'],
+                       res['pipes_max'], res['truncated'], cfg['eval_episodes'],
+                       res['pipes_censored_mean']))
+
+                # ---- 最佳模型：两级门控 ----
+                # 旧做法挂在 recent100_pipes 上（带 epsilon 的训练分数，SE 约 22%），
+                # 实测在选噪声：被它选中的 best.pt 在固定集上只有 74.6 根，
+                # 而它没选的 final.pt 有 95.1 根。见 WHERE_IS_THE_PROBLEM.md 第二节。
+                #
+                # 现在：先用定期评测的 IQM 筛（便宜），出现候选再跑一次
+                # **换一批关卡**的确认评测（贵，但只在候选出现时跑）。
+                # 换关卡是必须的 —— 在筛选用的那 20 关上比较，等于对着筛选集过拟合。
+                gate = res['pipes_iqm'] if cfg['best_gate_metric'] == 'iqm' \
+                    else res['pipes_mean']
+                if (episode >= cfg['best_min_episodes']
+                        and gate > best_screen * cfg['best_improve_frac']
+                        and episode - last_best_episode
+                        >= cfg['best_cooldown_episodes']):
+                    best_screen = gate
+                    conf = evaluate(agent.online, cfg, device,
+                                    cfg['best_confirm_episodes'],
+                                    epsilon=cfg['eval_epsilon'], env=eval_env,
+                                    seed_base=cfg['eval_seed_base']
+                                    + cfg['best_confirm_seed_offset'])
+                    c = conf['pipes_iqm'] if cfg['best_gate_metric'] == 'iqm' \
+                        else conf['pipes_mean']
+                    if c > best_confirmed:
+                        say("new best: confirm %s=%.2f (was %.2f) over %d eps "
+                            "at ep=%d -> best.pt"
+                            % (cfg['best_gate_metric'], c, best_confirmed,
+                               cfg['best_confirm_episodes'], episode))
+                        best_confirmed = c
+                        last_best_episode = episode
+                        checkpoint.save_best(
+                            os.path.join(run_dir, 'best.pt'),
+                            agent, cfg, c, episode, decision_step)
+                    else:
+                        say("candidate @ep=%d rejected: confirm %s=%.2f "
+                            "<= best %.2f (screening was noise)"
+                            % (episode, cfg['best_gate_metric'], c, best_confirmed))
 
             # ---- 断点续训：双槽轮转 ----
             if time.time() - last_resume_t > cfg['resume_every_minutes'] * 60:

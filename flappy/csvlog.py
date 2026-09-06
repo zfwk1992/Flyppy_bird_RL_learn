@@ -19,7 +19,19 @@ TRAIN_FIELDS = ['grad_step', 'decision_step', 'loss', 'td_abs_mean', 'td_abs_max
                 'q_mean', 'q_std', 'q_min', 'q_max', 'target_q_mean', 'grad_norm',
                 'lr', 'epsilon', 'buffer_size', 'syncs', 'dec_per_s', 'grad_per_s']
 EVAL_FIELDS = ['episode', 'decision_step', 'n_eval_eps', 'eval_pipes_mean',
-               'eval_pipes_std', 'eval_pipes_max', 'eval_len_mean']
+               'eval_pipes_std', 'eval_pipes_max', 'eval_len_mean',
+               # 下面几列是 2026-09-06 加的。
+               # **判据仍然是 eval_pipes_mean** —— 分数近似几何分布，样本均值
+               # 是它的充分统计量、最小方差估计（实测相对 SE：均值 20% <
+               # 几何均值 25% < iqm 33% < 中位 35%）。iqm/median 只作为
+               # 对离群值稳健的交叉验证，q25/q75 给区间估计。
+               # truncated 必须单独记 —— 撞上决策上限的局真实分数是未知的
+               # （>=上限），当成上限计入会**低估**，而且策略越强截断越多，
+               # 会让"变强"看起来像"没变化"。censored 是按右删失校正过的
+               # 平均存活（实测低估约 14%：95.1 -> 108.7）。
+               'eval_pipes_iqm', 'eval_pipes_median',
+               'eval_pipes_q25', 'eval_pipes_q75', 'eval_truncated',
+               'eval_pipes_censored']
 # 诊断列单独一个文件，见 flappy/diagnostics.py。
 # 不并进 eval.csv 是因为它们的语义不同：eval.csv 是"考了多少分"，
 # diag.csv 是"网络内部什么状态" —— 后者在成绩崩掉时才是唯一还有信号的东西。

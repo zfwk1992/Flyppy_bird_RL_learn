@@ -145,6 +145,64 @@ def make_env(cfg, throttle_fps=None):
 # ======================================================================
 # 贪婪评测
 # ======================================================================
+def iqm(values):
+    """Interquartile mean：排序后掐掉最低和最高各 25%，对中间 50% 取均值。
+
+    > **注意：在本项目里 IQM 不是首选统计量，均值才是。** 这个函数保留下来
+    > 只作为对离群值稳健的交叉验证（比如想确认某次高分不是一两局撑起来的）。
+    >
+    > IQM 出自 Agarwal et al., *Deep RL at the Edge of the Statistical
+    > Precipice* (NeurIPS 2021)，那篇解决的是**跨任务聚合**时少数任务尺度
+    > 悬殊的问题。本项目的场景不同：单任务、分数近似**几何分布**
+    > （每根管道死亡风险大致恒定，实测 1.457%/根）。对几何分布来说
+    > **样本均值就是充分统计量、也是最小方差估计**，掐掉一半数据只会更差。
+    >
+    > 实测（`final.pt` 40 局，重采样 20 局算标准误）：
+    >     均值 95.1 相对SE **20%** ← 最稳
+    >     IQM  67.2 相对SE   33%
+    >     中位 53.0 相对SE   35%
+    >
+    > 所以真正降噪的办法只有**加评测局数**（SE ∝ 1/√n）和**配对比较**
+    > （固定关卡消掉难度差异），不是换统计量。详见
+    > docs/research/WHERE_IS_THE_PROBLEM.md。
+    """
+    a = np.sort(np.asarray(values, dtype=float))
+    n = len(a)
+    if n == 0:
+        return float('nan')
+    k = n // 4                       # 每端掐掉 25%
+    core = a[k:n - k] if n - 2 * k > 0 else a
+    return float(core.mean())
+
+
+def censored_mean(pipes, truncated):
+    """把撞上决策上限的局当成**右删失**来估平均存活长度。
+
+    为什么需要它
+    ------------
+    ``max_episode_decisions`` 会把还活着的局强行截断。这些局的真实分数是
+    未知的（只知道 >= 当前分），把它们按当前分计入均值就是**系统性低估**，
+    而且**策略越强截断越多、低估越严重** —— 会让"变强了"看起来像"没变化"。
+
+    实测（`final.pt` 40 局，5 局被截断）：普通均值 95.1，删失校正后 108.7，
+    低估约 14%。
+
+    做法是生存分析里最基本的那一个：风险 = 死亡次数 / 总暴露量，
+    平均存活 = 1/风险。截断的局只贡献暴露量、不贡献死亡。
+    这里假设每根管道的死亡风险恒定（实测条件概率在 68-93% 之间无趋势，
+    近似成立）。
+
+    代价：相对标准误比普通均值高（实测 28% vs 20%），因为死亡次数变少了。
+    **所以它不适合当门控指标，适合当"报告真实水平"的那个数。**
+    """
+    p = np.asarray(pipes, dtype=float)
+    deaths = int(len(p) - int(np.sum(truncated)))
+    if deaths <= 0:                  # 全部被截断：只能给一个下界
+        return float(p.sum() / max(len(p), 1))
+    return float(p.sum() / deaths)
+
+
+
 @torch.no_grad()
 def evaluate(net, cfg, device, n_episodes, epsilon=0.0, max_decisions=None,
              q_stats=False, env=None, seed_base=None):
@@ -182,6 +240,7 @@ def evaluate(net, cfg, device, n_episodes, epsilon=0.0, max_decisions=None,
 
     stacker = FrameStack(cfg['frame_stack'])
     pipes, lengths, returns = [], [], []
+    was_trunc = []
     q_max_all, q_gap_all = [], []
     n_truncated = 0
 
@@ -215,6 +274,7 @@ def evaluate(net, cfg, device, n_episodes, epsilon=0.0, max_decisions=None,
                     pipes.append(info['score'])
                     lengths.append(n_dec)
                     returns.append(ep_ret)
+                    was_trunc.append(not done)
                     n_truncated += int(not done)
                     break
                 stack = stacker.push(frame)
@@ -229,6 +289,12 @@ def evaluate(net, cfg, device, n_episodes, epsilon=0.0, max_decisions=None,
         pipes_std=float(np.std(pipes)),
         pipes_max=int(np.max(pipes)),
         pipes_median=float(np.median(pipes)),
+        pipes_iqm=iqm(pipes),
+        # 截断局按右删失处理的平均存活。策略越强截断越多，普通均值
+        # 的低估就越严重 —— 报告真实水平时看这个。
+        pipes_censored_mean=censored_mean(pipes, was_trunc),
+        pipes_q25=float(np.percentile(pipes, 25)),
+        pipes_q75=float(np.percentile(pipes, 75)),
         len_mean=float(np.mean(lengths)),
         return_mean=float(np.mean(returns)),
         truncated=n_truncated,

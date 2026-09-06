@@ -152,6 +152,27 @@ CONFIG = dict(
     resume_every_minutes=30,
     log_train_every_grad_steps=100,
 
+    # ---- best.pt 的门控（2026-09-06 重做）----
+    # 原来挂在 recent100_pipes 上 —— 那是**带 epsilon 探索的训练分数**，
+    # 而且分数近似几何分布、标准误约 22%。实测证明它在选噪声：
+    # 同一批 40 个固定关卡上，被门控选中的 best.pt 只有 74.6 根，
+    # 而它没选的 final.pt 有 95.1 根。详见
+    # docs/research/WHERE_IS_THE_PROBLEM.md 第二节。
+    #
+    # 现在改成两级：定期贪婪评测的 IQM 先筛，出现候选再跑一次更大规模的
+    # **确认评测**才真正落盘。两级是为了省时间 —— 确认评测只在候选出现时跑。
+    # 门控用**均值**，不是 IQM。一开始想用 IQM（Agarwal et al. NeurIPS 2021），
+    # 实测发现在这个任务上它更差：分数近似几何分布，样本均值是充分统计量、
+    # 也是最小方差估计。final.pt 40 局重采样的相对标准误 ——
+    #     均值 20%   几何均值 25%   IQM 33%   中位 35%
+    # 掐掉一半数据只会更吵。降噪只能靠加局数和配对比较。
+    best_gate_metric='mean',         # 'mean' | 'iqm'（iqm 留作稳健性交叉验证）
+    best_confirm_episodes=60,        # 确认评测的局数。20 局 SE 约 22%，60 局降到约 13%
+    best_confirm_seed_offset=500_000,  # 确认用**另一批**关卡：否则等于在筛选集上过拟合
+    best_min_episodes=500,           # 太早的存档没意义
+    best_cooldown_episodes=100,      # 两次落盘之间的最小间隔
+    best_improve_frac=1.02,          # 筛选阈值：要比当前最好高 2% 才值得确认
+
     # ---- 训练期诊断（见 flappy/diagnostics.py）----
     diag_probe_states=512,           # 固定探针集的状态数。跟着定期评测一起算，
                                      # 512 个状态一次前向 + 一次 256 维 SVD，
@@ -170,6 +191,8 @@ SMOKE_OVERRIDES = dict(
     eps_anneal2_decisions=40_000,
     max_episodes=20_000,
     eval_every_episodes=2_000,
+    best_confirm_episodes=10,        # 自检只验流程通不通，不用跑满 60 局
+    diag_probe_states=128,           # 同上：探针集小一点，自检快一些
 )
 
 
