@@ -25,6 +25,15 @@ def main():
     p.add_argument('--epsilon', type=float, default=0.0)
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--q-stats', action='store_true')
+    # ---- 固定评测集（D0）----
+    p.add_argument('--seed-base', type=int, default=None,
+                   help='base seed of the fixed evaluation set; episode i uses '
+                        'seed_base+i. Defaults to cfg["eval_seed_base"].')
+    p.add_argument('--no-fixed-set', dest='fixed_set', action='store_false',
+                   default=True,
+                   help='old behaviour: seed once at start and let episodes share '
+                        'one random stream. Only for reproducing pre-D0 numbers -- '
+                        'results are NOT comparable across checkpoints.')
     p.add_argument('--max-decisions', type=int, default=2000,
                    help='cap on episode length; a good policy never dies')
     p.add_argument('--pipe-gap', type=int, default=None,
@@ -54,8 +63,16 @@ def main():
     random.seed(a.seed)
     np.random.seed(a.seed)
 
+    # 默认走固定评测集：第 i 局用 seed_base+i 播种，管道序列只由 i 决定。
+    # 不这么做的话，两个模型只要存活局长不同，从第 2 局起管道就错位了 ——
+    # 跨存档的比较全部失去意义。详见 flappy/rollout.py: evaluate 的 docstring。
+    seed_base = None
+    if a.fixed_set:
+        seed_base = a.seed_base if a.seed_base is not None else cfg['eval_seed_base']
+
     res = evaluate(net, cfg, device, a.episodes, epsilon=a.epsilon,
-                   max_decisions=a.max_decisions, q_stats=a.q_stats)
+                   max_decisions=a.max_decisions, q_stats=a.q_stats,
+                   seed_base=seed_base)
 
     print(checkpoint.describe(ckpt, cfg, a.checkpoint))
     # 环境必须显式打出来 —— 泛化测试的全部意义就在于"用哪个分布评的"
@@ -72,6 +89,14 @@ def main():
     print("  environment   : %s   [%s]"
           % (env_desc, "training distribution" if same else "SHIFTED - generalisation test"))
     print("  eval episodes : %d  (epsilon=%.3f)" % (res['episodes'], a.epsilon))
+    # 用了哪一组关卡必须打出来：固定集上的绝对分数只在同一个 seed_base 下可比
+    if seed_base is None:
+        print("  eval set      : FLOATING - episodes share one random stream. "
+              "NOT comparable across checkpoints (pre-D0 behaviour).")
+    else:
+        print("  eval set      : FIXED seed_base=%d (episode i uses %d+i) "
+              "-- paired comparison across checkpoints is valid"
+              % (seed_base, seed_base))
     print("  pipes mean    : %.3f +- %.3f" % (res['pipes_mean'], res['pipes_std']))
     print("  pipes median  : %.1f    max: %d" % (res['pipes_median'], res['pipes_max']))
     print("  ep len (dec)  : %.1f  (cap %d)" % (res['len_mean'], res['max_decisions']))

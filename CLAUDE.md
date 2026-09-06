@@ -59,7 +59,7 @@ Windows 用 `.\setup.ps1`（国内加 `-Mirror`）。**本项目不提供 Docker
 ## 改动后必须验证
 
 ```bash
-python test/test_env_and_buffer.py     # 11 个单测，约 30 秒
+python test/test_env_and_buffer.py     # 13 个单测，约 30 秒
 python train.py --smoke --allow-cpu    # 管线自检
 ```
 

@@ -207,8 +207,12 @@ def train(cfg, args):
 
             # ---- 定期评测 ----
             if cfg['eval_every_episodes'] and episode % cfg['eval_every_episodes'] == 0:
+                # seed_base 固定 => 每次评测跑的是**同一组关卡**，于是 eval.csv
+                # 变成一条可纵向比较的曲线，而不是每次换一批关卡的噪声。
+                # evaluate 内部会保存/恢复全局随机流，不会劫持训练自己的随机序列。
                 res = evaluate(agent.online, cfg, device, cfg['eval_episodes'],
-                               epsilon=cfg['eval_epsilon'], env=eval_env)
+                               epsilon=cfg['eval_epsilon'], env=eval_env,
+                               seed_base=cfg['eval_seed_base'])
                 log.eval.write(episode=episode, decision_step=decision_step,
                                n_eval_eps=cfg['eval_episodes'],
                                eval_pipes_mean=round(res['pipes_mean'], 3),
@@ -240,7 +244,8 @@ def train(cfg, args):
     # 收尾：跑一次更大规模的贪婪评测，并保存最终模型
     say("stopping (%s). running final evaluation..." % stop_reason)
     final = evaluate(agent.online, cfg, device, 30,
-                     epsilon=cfg['eval_epsilon'], env=eval_env)
+                     epsilon=cfg['eval_epsilon'], env=eval_env,
+                     seed_base=cfg['eval_seed_base'])
     say("FINAL eval: pipes=%.2f+-%.2f max=%d len=%.1f truncated=%d/30"
         % (final['pipes_mean'], final['pipes_std'], final['pipes_max'],
            final['len_mean'], final['truncated']))

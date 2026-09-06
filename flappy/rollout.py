@@ -109,15 +109,20 @@ def epsilon_at(decision_step, cfg):
     return cfg['eps_final']
 
 
-def sample_random_action(cfg):
+def sample_random_action(cfg, rng=None):
     """随机动作按 p_flap≈0.2 采样，而非均匀的 0.5。
 
     实测物理：一次扇翅令 velY=-5，重力 +0.5/帧，单次扇翅后净位移在
     T≈19 帧（约 5 次决策）归零 —— 所以"悬停"对应的扇翅率就是 1/5。
     均匀随机（p=0.5）会把鸟顶死在天花板上，这正是旧 warmup 数据毫无价值的原因。
     只改行为策略，off-policy 的 Q 学习不受影响。
+
+    ``rng`` 传入一个独立的 ``random.Random`` 时，探索噪声就不再消耗全局随机流。
+    固定评测集需要这一点：管道生成也走全局 ``random``，如果动作噪声和管道
+    共用一条流，不同模型抽到的随机动作次数不同，同一局的管道就会错位。
     """
-    return 1 if random.random() < cfg['eps_random_flap_prob'] else 0
+    r = rng if rng is not None else random
+    return 1 if r.random() < cfg['eps_random_flap_prob'] else 0
 
 
 # ======================================================================
@@ -142,7 +147,7 @@ def make_env(cfg, throttle_fps=None):
 # ======================================================================
 @torch.no_grad()
 def evaluate(net, cfg, device, n_episodes, epsilon=0.0, max_decisions=None,
-             q_stats=False, env=None):
+             q_stats=False, env=None, seed_base=None):
     """跑 n_episodes 局并汇总。训练中的定期评测和 eval.py 用的是同一份实现。
 
     ``max_decisions`` 的上限是必需的，不是保险丝：一个学好的策略可以永远不死，
@@ -150,6 +155,24 @@ def evaluate(net, cfg, device, n_episodes, epsilon=0.0, max_decisions=None,
 
     ``env`` 可以复用一个专用的评测环境；**绝不能**传训练用的那个环境实例，
     否则训练回合的状态会被评测冲掉。
+
+    ``seed_base`` 打开**固定评测集**：第 i 局在 ``env.reset()`` 之前用
+    ``seed_base + i`` 给全局 ``random`` 播种，于是第 i 局的管道序列只由 i 决定，
+    与"这个模型前面几局活了多久"无关。
+
+    为什么必须逐局播种
+    ------------------
+    管道生成用的是全局 ``random`` 模块。只在评测开始时播一次种的话，两个模型
+    只要存活局长不同（几乎总是不同），从第 2 局起消耗掉的随机数数量就不同，
+    之后每一局的管道都**错位**—— "固定种子"实际上只保证了第 1 局可比。
+    这个缺陷让此前所有跨存档比较都不可信，是 docs/IMPROVEMENT_PLAN.md 里的 D0。
+
+    两个配套的细节，缺一条都会让"固定"失效：
+
+    1. **探索噪声必须走独立的随机源**。epsilon>0 时如果动作噪声也从全局流里抽，
+       不同模型在同一局里抽到的次数不同，管道照样错位。
+    2. **退出前恢复全局随机状态**。训练中每 500 局就会评测一次，如果评测把
+       全局 ``random`` 重新播种了还不还原，训练本身的随机流就被评测劫持了。
     """
     if max_decisions is None:
         max_decisions = cfg['max_episode_decisions']
@@ -162,29 +185,43 @@ def evaluate(net, cfg, device, n_episodes, epsilon=0.0, max_decisions=None,
     q_max_all, q_gap_all = [], []
     n_truncated = 0
 
-    for _ in range(n_episodes):
-        stack = stacker.reset(env.reset())    # env.reset() 已是 (80,80) uint8
-        phi = env.current_potential()
-        n_dec, ep_ret = 0, 0.0
-        while True:
-            if epsilon > 0 and random.random() < epsilon:
-                action = sample_random_action(cfg)
-            else:
-                q = net(torch.from_numpy(stack).unsqueeze(0).to(device))[0]
-                action = int(q.argmax().item())
-                if q_stats:
-                    q_max_all.append(float(q.max()))
-                    q_gap_all.append(float(q[1] - q[0]))
-            frame, r, done, info, phi = skip_step(env, action, phi, cfg)
-            n_dec += 1
-            ep_ret += r
-            if done or n_dec >= max_decisions:
-                pipes.append(info['score'])
-                lengths.append(n_dec)
-                returns.append(ep_ret)
-                n_truncated += int(not done)
-                break
-            stack = stacker.push(frame)
+    # 固定评测集：借用全局随机流，用完必须原样还回去（见 docstring 第 2 点）
+    saved_random_state = random.getstate() if seed_base is not None else None
+    # 探索噪声用独立随机源，不去动全局流（第 1 点）。异或一个常数只是为了
+    # 让它和管道的种子序列错开，没有别的含义。
+    explore_rng = random.Random(seed_base ^ 0x5EED) if seed_base is not None else None
+
+    try:
+        for i in range(n_episodes):
+            if seed_base is not None:
+                random.seed(seed_base + i)
+            stack = stacker.reset(env.reset())  # env.reset() 已是 (80,80) uint8
+            phi = env.current_potential()
+            n_dec, ep_ret = 0, 0.0
+            while True:
+                noise = explore_rng if explore_rng is not None else random
+                if epsilon > 0 and noise.random() < epsilon:
+                    action = sample_random_action(cfg, explore_rng)
+                else:
+                    q = net(torch.from_numpy(stack).unsqueeze(0).to(device))[0]
+                    action = int(q.argmax().item())
+                    if q_stats:
+                        q_max_all.append(float(q.max()))
+                        q_gap_all.append(float(q[1] - q[0]))
+                frame, r, done, info, phi = skip_step(env, action, phi, cfg)
+                n_dec += 1
+                ep_ret += r
+                if done or n_dec >= max_decisions:
+                    pipes.append(info['score'])
+                    lengths.append(n_dec)
+                    returns.append(ep_ret)
+                    n_truncated += int(not done)
+                    break
+                stack = stacker.push(frame)
+    finally:
+        # 无论正常结束还是抛异常，都把全局随机流还回去
+        if saved_random_state is not None:
+            random.setstate(saved_random_state)
 
     out = dict(
         episodes=n_episodes,

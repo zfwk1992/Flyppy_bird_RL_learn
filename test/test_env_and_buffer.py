@@ -731,6 +731,85 @@ def test_n_step_returns():
 
 
 # ======================================================================
+def test_fixed_eval_set_is_policy_independent():
+    """固定评测集：第 i 局的管道序列**只由 i 决定**，与策略活多久无关。
+
+    这是 docs/IMPROVEMENT_PLAN.md 的 D0，对应一个真实存在过的缺陷：
+    `evaluate()` 原来只在评测开始时播一次种，而管道生成走的是全局 `random`。
+    两个模型只要存活局长不同（几乎总是不同），从第 2 局起消耗掉的随机数数量
+    就不同，之后每一局的管道都**错位** —— "固定种子"实际上只保证第 1 局可比。
+    于是所有跨存档的比较都在拿不同的关卡互相比，噪声被当成了改进。
+
+    这个测试同时验两件事：
+      (a) 逐局播种之后，任意"策略"（这里用不同的消耗量模拟）看到的关卡逐位相同
+      (b) 只播一次种的老做法**确实会**产生分歧 —— 否则这个测试没有鉴别力，
+          它就算通过也证明不了修复有效
+    """
+    import random as _random
+    from flappy.config import resolve_config
+    from flappy.rollout import make_env
+
+    cfg = resolve_config()
+    env = make_env(cfg)
+    BASE, N_EP, N_STEPS = 20260906, 4, 40
+
+    def gaps_of_episode():
+        """跑一局的前 N_STEPS 帧，记录出现过的管道形状。"""
+        env.reset()
+        seen = []
+        for t in range(N_STEPS):
+            # 每 5 帧扇一次翅膀 ~= 悬停，能活满 N_STEPS；死了就停，
+            # 关键是**两次调用做的事完全一样**，比较才有意义
+            _, _, done, _ = env.step(1 if t % 5 == 0 else 0)
+            for up in env.upperPipes:
+                seen.append((round(up['x'], 6), round(up['y'], 6),
+                             round(up['gap'], 6)))
+            if done:
+                break
+        return seen
+
+    def collect(per_episode_seed, burn):
+        """burn 模拟"不同策略消耗掉不同数量的随机数"。"""
+        out = []
+        if not per_episode_seed:
+            _random.seed(BASE)
+        for i in range(N_EP):
+            if per_episode_seed:
+                _random.seed(BASE + i)
+            out.append(gaps_of_episode())
+            for _ in range(burn):          # 策略差异带来的额外随机数消耗
+                _random.random()
+        return out
+
+    # ---- (a) 逐局播种：消耗量不同，关卡照样逐位相同 ----
+    a = collect(True, burn=0)
+    b = collect(True, burn=137)
+    assert a == b, "逐局播种后，不同消耗量仍应得到完全相同的关卡序列"
+
+    # ---- (b) 只播一次种：必须产生分歧，否则这个测试测不出东西 ----
+    c = collect(False, burn=0)
+    d = collect(False, burn=137)
+    assert c != d, ("只播一次种却没有分歧 —— 这个测试失去了鉴别力，"
+                    "先查 burn 是否真的消耗了随机数")
+    first_bad = next(i for i in range(N_EP) if c[i] != d[i])
+    assert first_bad >= 1, "第 1 局本来就该相同（那正是老做法唯一保住的一局）"
+
+    # ---- (c) 全局随机流必须被 evaluate 还原（否则评测会劫持训练的随机序列）----
+    _random.seed(12345)
+    before = _random.getstate()
+    saved = _random.getstate()
+    _random.seed(BASE)                     # 模拟 evaluate 内部的播种
+    for _ in range(50):
+        _random.random()
+    _random.setstate(saved)                # evaluate 的 finally 分支
+    assert _random.getstate() == before, "评测结束后全局随机状态必须原样还回去"
+
+    print(f"  [12] OK  fixed eval set: {N_EP} episodes identical across policies "
+          f"(burn=0 vs 137); one-shot seeding diverges from episode {first_bad + 1}; "
+          f"global RNG state restored")
+
+
+# ======================================================================
 def _run_all():
     tests = [
         test_reward_accumulation_and_telescoping,
@@ -745,6 +824,7 @@ def _run_all():
         test_pipe_gap_is_configurable,
         test_pipe_randomization,
         test_n_step_returns,
+        test_fixed_eval_set_is_policy_independent,
     ]
     print(f"running {len(tests)} env tests...")
     for fn in tests:
