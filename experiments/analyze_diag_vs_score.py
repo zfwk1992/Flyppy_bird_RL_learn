@@ -82,24 +82,80 @@ DIAG_METRICS_AND_EXPECTED_SIGN = [
 ]
 
 
-def analyze(run_dir):
+def analyze(run_dir, late_from=13000):
+    """三种口径各算一遍。**只看第一种会得出错误结论。**
+
+    整段训练的原始相关是**伪相关**：训练推进时分数在涨，休眠率也在涨、
+    有效秩在跌 —— 两者都是"训练步数"的函数，把它们直接相关等于测
+    "两个量是不是都随时间单调变化"，而不是"它们之间有没有关系"。
+    实测这会算出「休眠越多分数越高 r=+0.68」这种明显荒谬的结果。
+
+    要回答"网络退化会不会导致成绩震荡"，只有后两种口径算数：
+
+      B 震荡区：把范围限制在成绩开始上下摆动之后（默认 ep>=13000），
+        这一段里训练进度不再主导分数，共同趋势被削弱
+      C 一阶差分：比较**变化量**而不是水平值，这是去趋势的标准做法 ——
+        "这一段休眠涨得多，成绩是不是跌得多"
+    """
     eval_rows = load_csv('%s/eval.csv' % run_dir)
     diag_rows = load_csv('%s/diag.csv' % run_dir)
     merged = merge_by_episode(eval_rows, diag_rows)
     print('%s: %d 个配对点（按 episode 对齐，eval.csv 共 %d 行，diag.csv 共 %d 行）'
           % (run_dir, len(merged), len(eval_rows), len(diag_rows)))
     if len(merged) < 8:
-        print('警告：配对点数 < 8，spearman 相关系数在这个样本量下基本不可信，'
-              '只能定性看符号，不要报具体数值。')
-    score = np.array([float(e['eval_pipes_mean']) for e, d in merged])
-    print('%-16s %12s  %10s' % ('指标', 'spearman r', '符合预期'))
+        print('警告：配对点数 < 8，spearman 在这个样本量下基本不可信。')
+
+    def col(rows, name):
+        """取一列，跳过空值（argmax_flip 第一行必然是空的，没有上一次可比）。"""
+        out = []
+        for e, d in rows:
+            v = d.get(name, '')
+            out.append(float(v) if v not in ('', None) else float('nan'))
+        return np.array(out)
+
+    late = [(e, d) for e, d in merged if int(e['episode']) >= late_from]
+    print('  其中震荡区（ep>=%d）%d 个点\n' % (late_from, len(late)))
+
+    print('%-16s %11s %11s %11s   %s'
+          % ('指标', 'A 全程(伪)', 'B 震荡区', 'C 一阶差分', '结论'))
+    print('-' * 72)
     results = {}
     for name, expected_sign in DIAG_METRICS_AND_EXPECTED_SIGN:
-        vals = np.array([float(d[name]) for e, d in merged])
-        r = _spearman(score, vals)
-        matches = (r * expected_sign > 0)
-        results[name] = r
-        print('%-16s %12.3f  %10s' % (name, r, '是' if matches else '否'))
+        def corr(rows):
+            if len(rows) < 5:
+                return float('nan')
+            s = np.array([float(e['eval_pipes_mean']) for e, _ in rows])
+            v = col(rows, name)
+            ok = ~(np.isnan(v) | np.isnan(s))
+            return _spearman(s[ok], v[ok]) if ok.sum() >= 5 else float('nan')
+
+        def corr_diff(rows):
+            if len(rows) < 6:
+                return float('nan')
+            s = np.array([float(e['eval_pipes_mean']) for e, _ in rows])
+            v = col(rows, name)
+            ds, dv = np.diff(s), np.diff(v)
+            ok = ~(np.isnan(dv) | np.isnan(ds))
+            return _spearman(ds[ok], dv[ok]) if ok.sum() >= 5 else float('nan')
+
+        rA, rB, rC = corr(merged), corr(late), corr_diff(late)
+        # 判据只看 B 和 C —— A 是伪相关，不参与判定
+        sig = [r for r in (rB, rC) if not np.isnan(r)]
+        if not sig:
+            verdict = '数据不足'
+        elif all(abs(r) < 0.4 for r in sig):
+            verdict = '无关系'
+        elif all(r * expected_sign > 0.4 for r in sig):
+            verdict = '支持'
+        else:
+            verdict = '不一致/弱'
+        results[name] = dict(whole=rA, late=rB, diff=rC, verdict=verdict)
+        fmt = lambda r: ('%11.3f' % r) if not np.isnan(r) else ('%11s' % 'n/a')
+        print('%-16s %s %s %s   %s'
+              % (name, fmt(rA), fmt(rB), fmt(rC), verdict))
+
+    print('\nA 列是**伪相关**，只作对照：训练推进时分数、休眠率、有效秩都随时间')
+    print('单调变化，直接相关只反映共同趋势。判据看 B 和 C。')
     return results
 
 
@@ -151,11 +207,32 @@ def _self_test():
                                             (3500, 25.0, 0.55, 30), (4000, 70.0, 0.12, 48)]:
                 w.writerow([ep, ep * 100, 512, 0.1, dorm, 0.1, eff95,
                             1.0, 2.0, 0.1, 10.0, 0.5, 0.05, 0.5])
-        results = analyze(d)
-        assert results['dorm_fc'] < -0.9, (
-            '构造的强负相关没有被正确检测到: %.3f' % results['dorm_fc'])
-        assert results['eff95_fc'] > 0.9, (
-            '构造的强正相关没有被正确检测到: %.3f' % results['eff95_fc'])
+        # late_from=0：自测数据只到 ep4000，不设成 0 的话震荡区是空的
+        results = analyze(d, late_from=0)
+        assert results['dorm_fc']['late'] < -0.9, (
+            '构造的强负相关没有被正确检测到: %.3f' % results['dorm_fc']['late'])
+        assert results['eff95_fc']['late'] > 0.9, (
+            '构造的强正相关没有被正确检测到: %.3f' % results['eff95_fc']['late'])
+        assert results['dorm_fc']['verdict'] == '支持', results['dorm_fc']
+        # 构造数据里 argmax_flip 是常数，不该被报成有关系
+        assert results['argmax_flip']['verdict'] == '无关系', results['argmax_flip']
+
+    print('=== 自测 4/4：空值（argmax_flip 首行）不该让脚本崩溃 ===')
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, 'eval.csv'), 'w', newline='') as f:
+            w = csv.writer(f); w.writerow(['episode', 'eval_pipes_mean'])
+            for ep, sc in enumerate([10., 50., 20., 80., 15., 90., 25., 70.]):
+                w.writerow([(ep + 1) * 500, sc])
+        with open(os.path.join(d, 'diag.csv'), 'w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(['episode', 'dorm_fc', 'eff95_fc', 'q_gap_median',
+                        'q_ceil_ratio', 'argmax_flip'])
+            for ep in range(8):
+                # 第一行 argmax_flip 为空，正是真实 diag.csv 的样子
+                w.writerow([(ep + 1) * 500, 0.1 * ep, 50 - ep, 1.0, 0.5,
+                            '' if ep == 0 else 0.05 * ep])
+        r = analyze(d, late_from=0)
+        assert not (r['argmax_flip']['late'] != r['argmax_flip']['late']),             'argmax_flip 全被当成空值丢掉了'
     print('全部自测通过。')
 
 
