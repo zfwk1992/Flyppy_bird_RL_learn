@@ -216,6 +216,18 @@ loss=0.024，和 ep 16500（92.1 根）的 11.35 / 0.114 / 0.029 完全无法区
   对比崩塌前后的存档，如果差距在崩塌前后明显缩小，指向 churn 是主因；
   如果差距变化不大但成绩仍然崩塌，指向 buffer 淘汰假说更可信。
   这条尚未验证，已列入本轮 CHECKLIST。
+- **2026-09-06 第四轮补充（外部文献部分支持，非本项目实测）**：CHAIN
+  （NeurIPS 2024）把这个现象称为"greedy action deviation"，在 MinAtar+
+  DoubleDQN（本项目尺度上最接近的一篇）上直接测过；其后续 C-CHAIN
+  （ICML 2025）给出"秩塌缩通过 NTK 驱动 churn 恶化"的机制论证（非本项目
+  设置，是 continual RL + policy-gradient）。**两篇拼起来部分填上了
+  "秩塌缩→翻转"这一步缺失的因果证据，但没有一篇在"单任务/DQN/小尺度"
+  这个和本项目完全一致的组合上验证过**，仍然要靠本机 diag.csv 验证。
+  τ 的具体取值参考也补了一条：*Compute-Optimal Scaling for Value-Based
+  Deep RL* 扫过 τ∈[5e-4,2e-1]，默认 5e-3，偏离一个数量级只降约 19% 数据
+  效率——可以作为 EMA 实现时的起点，不必专门为本项目尺度重新扫。
+  详见 [research/UPGRADE_ANALYSIS.md](research/UPGRADE_ANALYSIS.md)
+  第 1.4 节和 `docs/research/NOTES-2026-09-06.md` §1.15/1.16。
 
 ### Tier 2 — Tier 1 之后再看
 
@@ -266,6 +278,24 @@ Collapse in Deep Reinforcement Learning*（OpenReview，NeurIPS 2023 投稿，
   几乎不增加实验设计成本），观察诊断量（尤其 `argmax_flip`）有没有变化。
   **不要因为这条而推迟已经有本项目自己实测支撑的 LayerNorm/ReDo/EMA 主线。**
   详见 `docs/research/NOTES-2026-09-06.md` §1.12/1.13。
+
+#### T2.5 CHAIN 风格 churn 正则化【新候选，2026-09-06 第四轮检索新增，证据强度中】
+
+**针对 A，直接对症"argmax 翻转"本身，不是间接手段。** 在参考批次（可复用
+已有的 `diag_probe_states`）上直接惩罚 churn：`L_cr = 0.5·E[(f_θ'(x̄)−f_θ(x̄))²]`
+（x̄ 不在训练 batch 里），加到原损失上。做法转述自 C-CHAIN（ICML 2025）
+论文笔记，公式建议本机能上网时核对官方 PDF。
+
+- 提出这条的 CHAIN（NeurIPS 2024）论文本身在 **MinAtar + DoubleDQN**
+  上直接测过"greedy action deviation"——和本项目计划的 `argmax_flip`
+  是同一个量，用词都几乎一样，是目前找到的和本项目尺度最接近的一篇
+  peer-review 工作。**但没有拿到那组实验的具体数字**（域名被拦截）。
+- 成本：中（每次更新前后要在参考集上多做一次前向）
+- 优先级：排在 T1.4/T2.1/UPGRADE_ANALYSIS①②（已有本项目自己部分实测
+  支撑）之后，比 T2.4（Adam β 匹配）优先——比 T2.4 更对症、来源更扎实
+  （peer-review 系统研究 vs 互相矛盾的摘要转述）。**不要因为这条推迟主线。**
+- 详见 [research/UPGRADE_ANALYSIS.md](research/UPGRADE_ANALYSIS.md) 第三节④
+  和 `docs/research/NOTES-2026-09-06.md` §1.15。
 
 #### T2.3 多种子训练取中位
 不是算法改进，是**结论的可信度**。跑 3 个 torch seed，报中位而不是最好那次。
@@ -446,3 +476,6 @@ node web/tools/death_attribution.mjs 30
 - [The Primacy Bias in Deep Reinforcement Learning](https://arxiv.org/abs/2205.07802) —— 周期性部分重置思路的源头论文
 - [Overcoming Policy Collapse in Deep Reinforcement Learning](https://openreview.net/forum?id=m9Jfdz4ymO) —— T2.4，Adam β1/β2 失配假说，未读到原文
 - [Weight Clipping for Deep Continual and Reinforcement Learning](https://arxiv.org/abs/2407.01704) —— T2.4，权重裁剪，公式已核实，效果未核实
+- [CHAIN: Reducing the Chain Effect of Value and Policy Churn](https://arxiv.org/abs/2409.04792) —— T1.4/T2.5，MinAtar+DoubleDQN 上测过"greedy action deviation"（即本项目 argmax_flip），未读到具体数字
+- [Mitigating Plasticity Loss in Continual RL by Reducing Churn (C-CHAIN)](https://arxiv.org/abs/2506.00592) —— T1.4/T2.5，"秩塌缩通过 NTK 驱动 churn 恶化"机制论证，场景非 DQN
+- [Compute-Optimal Scaling for Value-Based Deep RL](https://arxiv.org/abs/2508.14881) —— T1.4，τ 敏感度扫描，默认 5e-3

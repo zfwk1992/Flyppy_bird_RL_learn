@@ -103,6 +103,44 @@ TD 误差因此很小 → loss / td_abs / q_mean 全都平稳，什么都看不�
 "动作差距塌缩 → argmax 翻转"这一步（需要在训练中记录连续两次更新之间
 argmax 变化的比例，见下面的建议 3）。
 
+### 1.4 因果链的外部文献支持（部分，非本项目直接实测，2026-09-06 第四轮检索）
+
+上面这条因果链最后一环缺的是独立证据。这轮检索找到两篇论文，**部分**填上了
+这个空——"部分"两个字很重要，下面把支持了什么、没支持什么分开写清楚。
+
+**CHAIN**（Tang et al., NeurIPS 2024，`arxiv.org/abs/2409.04792`）：DQN 类
+算法里贪婪动作在训练中来回变化的现象，论文里给它起的名字就是
+**"greedy action deviation"**——和本项目计划测的 `argmax_flip` 是同一个量，
+用词都几乎一样。这篇论文**在 MinAtar（比完整 Atari-60 小得多的基准）+
+DoubleDQN 上直接测过这个量**，规模上是目前找到的和本项目最接近的一篇。
+**但**：只搜到"存在 with/without CHAIN 的对比图"这个事实，`arxiv.org` 和
+项目页 `bluecontra.github.io` 本轮均被环境的出口代理拦截，**没有拿到
+具体数字**。
+
+**C-CHAIN**（同作者，ICML 2025，`arxiv.org/abs/2506.00592`，机制细节通过
+第三方论文笔记 `raw.githubusercontent.com/zhaoyang97/Paper-Notes-en` 读到）：
+给出了一个明确的**机制论证**（不只是相关）——有效秩塌缩通过 NTK 矩阵驱动
+churn 恶化，形成恶性循环（rank collapse → churn 上升 → 表征更差 → rank
+继续塌）。这正是本项目因果链中间缺的那一环的独立文献支持。**但**：
+C-CHAIN 的实验场景是 continual RL（任务序列切换）+ policy-gradient 类算法，
+论文自己写明"不包含 DQN 或 value-based RL 的实验"。
+
+**两篇拼起来的覆盖范围**：CHAIN 覆盖了本项目关心的算法（DQN 类）和尺度
+（MinAtar），但没有专门做"rank→churn"的机制分析；C-CHAIN 做了机制分析，
+但覆盖的是不同算法和不同问题设定。**没有一篇论文单独覆盖"单任务 / DQN /
+小尺度 / 稀疏奖励"这个和本项目完全一致的组合**，所以这仍然不能替代本机
+用 diag.csv 做的直接验证（CHECKLIST #1/#2）——它能提供的是：如果本机测出
+来的相关系数方向和这两篇的机制方向一致，这个结论不只是本项目内部自洽，
+也和外部文献吻合，可信度更高；如果方向不一致，也值得记录下来，因为
+这本身就说明本项目的具体情况和这两篇论文假设的机制不完全一样。
+
+**附带一个对诊断设计的印证**：C-CHAIN 定义 churn 用的是"在**不属于本次
+训练 batch** 的参考状态 x̄ 上，`C_f(x̄,θ,Δθ) = f_θ'(x̄) - f_θ(x̄)`"——
+这和本项目 `diag_probe_states=512`（固定探针集，独立于训练 batch）的
+设计思路完全一致，说明这个设计不是本项目自己拍脑袋想的，是这类诊断的
+标准做法。完整检索细节和证据强度分级见
+`docs/research/NOTES-2026-09-06.md` §1.15。
+
 ### 1.4 顺带修正仓库里的一个旧判断
 
 `docs/learn/12-network-sizing.md` 当年测到 fc512 有 14–25% 的单元从不激活，
@@ -194,6 +232,39 @@ LayerNorm 满足它。参数量只涨 0.066%。
 
 - 成本：**极低**（几行 + 一个 τ）
 - 验收：主要图稳不图涨
+- **τ 起点建议（2026-09-06 第四轮检索新增，非本项目实测）**：
+  *Compute-Optimal Scaling for Value-Based Deep RL*（Fu, Rybkin et al.,
+  2025）在 `τ∈[5e-4, 2e-1]` 上扫过一遍，发现 τ 偏离最优值一个数量级只让
+  数据效率降约 19%（对照：batch size 偏一个数量级降最多 52%）——τ 是相对
+  不敏感的超参，论文默认用 5e-3。**这是一个可以直接抄的起点，不是本项目
+  尺度上验证过的最优值**（原实验是大规模 Atari 计算扩展律研究，和本项目
+  差异很大，只借用"τ 相对不敏感"这个方向性结论，本轮 WebSearch 摘要转述，
+  原文 `EGRESS_BLOCKED`）。建议本机从 τ=5e-3 起步，把调参预算留给更关键
+  的地方，不需要专门为本项目尺度重新扫一遍。见
+  `docs/research/NOTES-2026-09-06.md` §1.16。
+
+### ④ CHAIN 风格 churn 正则化　【新候选，证据强度中，2026-09-06 第四轮新增】
+
+在参考批次（可复用已有的 `diag_probe_states`）上直接惩罚 churn 本身：
+`L_cr(θ) = 0.5 · E_{x̄∈参考集}[(f_θ'(x̄) − f_θ(x̄))²]`，加到原损失里
+`L_total = L_RL + λ·L_cr`（做法转述自 C-CHAIN 论文笔记，公式细节建议本机
+能上网时找官方 PDF 核对，不要直接照抄笔记转写版本）。
+
+这条和①②③不同的地方：①②③都是**间接**手段——通过防止单元死亡/摊平目标
+阶跃来间接抑制震荡；这条是**直接**测量并惩罚"翻转"这个症状本身。
+
+- 成本：中（每次更新前后要在参考集上多做一次前向；本项目已有的
+  `diag_probe_states=512` 基础设施理论上可以复用，不需要另起一套）
+- 证据强度：**中**——CHAIN/C-CHAIN 是 peer-reviewed、跨算法家族的系统研究
+  （不像 T2.4 的 Adam β 匹配那样只有互相矛盾的摘要转述、零一手数据），
+  且 CHAIN 本身在 MinAtar+DoubleDQN（本项目尺度上最接近的一篇）上直接
+  测过这个现象；**但**没有拿到 MinAtar+DQN 那组实验的具体消融数字，
+  且"这个正则化在本项目场景下能不能生效"完全没有证据，纯粹是"机制上
+  直接对口"的候选。
+- **优先级**：排在①②③（LayerNorm/ReDo/EMA，已有本项目自己的部分实测
+  支撑）之后，比 T2.4（Adam β 匹配）优先——比 T2.4 更对症、证据来源更
+  扎实。**不要因为这条而推迟①②③的主线验证。**
+- 详见 `docs/research/NOTES-2026-09-06.md` §1.15。
 
 ### 以及一条不改算法、但必须做的：把诊断量写进训练日志
 
@@ -250,7 +321,9 @@ LayerNorm 满足它。参数量只涨 0.066%。
 - [Plasticity Loss in Deep Reinforcement Learning: A Survey](https://arxiv.org/pdf/2411.04832)
 - [Normalization and effective learning rates in RL（LayerNorm 复活休眠单元 / NaP）](https://proceedings.neurips.cc/paper_files/paper/2024/file/c04d37be05ba74419d2d5705972a9d64-Paper-Conference.pdf)
 - [Implicit Under-Parameterization Inhibits Data-Efficient Deep RL（秩塌缩）](https://arxiv.org/pdf/2010.14498)
-- [CHAIN: Reducing the Chain Effect of Value and Policy Churn](https://arxiv.org/abs/2409.04792)
+- [CHAIN: Reducing the Chain Effect of Value and Policy Churn](https://arxiv.org/abs/2409.04792) —— NeurIPS 2024，MinAtar+DoubleDQN 上直接测过"greedy action deviation"（即本项目的 argmax_flip），未读到具体数字
+- [Mitigating Plasticity Loss in Continual RL by Reducing Churn (C-CHAIN)](https://arxiv.org/abs/2506.00592) —— ICML 2025，给出"秩塌缩通过 NTK 驱动 churn 恶化"的机制论证，但场景是 continual RL + policy-gradient，不含 DQN 实验
 - [The Phenomenon of Policy Churn](https://arxiv.org/abs/2206.00730) —— 注意：这篇认为 churn 是**有益的隐式探索**，不是病因
+- [Compute-Optimal Scaling for Value-Based Deep RL](https://arxiv.org/abs/2508.14881) —— τ 敏感度扫描，默认 τ=5e-3，偏离一个数量级只降约 19% 数据效率
 - [Averaged-DQN: Variance Reduction and Stabilization](https://arxiv.org/pdf/1611.01929)
 - [Bigger, Better, Faster: Human-level Atari with human-level efficiency（高 replay ratio + 周期重置）](https://arxiv.org/pdf/2305.19452)
