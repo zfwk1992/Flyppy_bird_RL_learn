@@ -1,5 +1,71 @@
 # 本机待办清单（2026-09-06 第四版重写）
 
+## 【2026-09-06 晚间新增，置顶】云端跑完 Layer-0 四个诊断实验后，留给本机的两条
+
+> 背景：这一轮云端 session 按 `PLAN-2026-09-06-next.md` §1 的 0.1/0.2/0.4 三条
+> （物理下限 oracle / 死亡解剖+Q轨迹 / 翻转落在哪些状态）在 Node 里全部真跑了，
+> 数字都在 `docs/research/LAYER0-RESULTS.md`。下面两条是云端**做不到**、必须
+> 本机（有 torch）补的部分。这两条和上面"第四版"的 #1/#2/#3（两个种子的
+> 诊断训练）是**两条独立的线**，不冲突，但如果时间只够做一条，建议先做
+> #1（诊断训练），因为下面这两条都依赖它产出的 checkpoint。
+
+### 新-1【需要 torch，本质是一行导出命令】补一次真正的 churn / argmax_flip 测量
+
+**背景**：云端写了 `web/tools/flip_on_critical.mjs`，能把探针状态分成"关键
+状态"（前瞻 K 步内某个动作必死）和"无差别状态"（两个动作都安全），然后比较
+两个模型在这两类状态上的贪愿动作翻转率。但云端只有 `runs/base_s0/final.pt`
+一个模型导出的 JS 权重，没有**同一次训练**里相邻的第二个 checkpoint，
+只能拿网页 demo 的旧模型（完全独立的另一次训练）凑数——这个"跨模型翻转率"
+在 `LAYER0-RESULTS.md` 实验 D 里已经标注**不能当 churn 用**，只是弱佐证。
+
+**跑什么**：
+
+```bash
+# 把同一次训练里相隔约 100 个梯度步的两个 checkpoint 都导出成 JS 权重
+# （若 runs/base_s0 下没有存到这么细粒度的 checkpoint，退而求其次用
+#  resume_0.pt / resume_1.pt 这种间隔更大的，也比跨训练强得多）
+python web/tools/export_weights.py --ckpt runs/base_s0/<早一点的ckpt>.pt --tag base_s0_a
+python web/tools/export_weights.py --ckpt runs/base_s0/<晚一点的ckpt>.pt --tag base_s0_b
+```
+
+导出后会各自生成 `web/model/weights_base_s0_a_fp16.bin` + `weights-meta-base_s0_a.js`
+（`_b` 同理，具体命名看 `export_weights.py --tag` 的实现）。然后把
+`web/tools/flip_on_critical.mjs` 里两行 `import { WEIGHTS_META as META_OLD }
+from '../model/weights-meta.js'`（以及 `META_NEW`）换成这两个新 tag 对应的
+meta 文件——**这是本机唯一需要写的代码改动**，其余分类/统计逻辑都已经现成。
+
+**大概要跑多久**：导出几秒钟；`flip_on_critical.mjs 800 15` 本身云端实测
+47.8 秒（Node，无需 GPU，本机会更快）。
+
+**看什么算成功**：真正的 `argmax_flip@关键状态` vs `argmax_flip@无差别状态`
+哪个更高。如果无差别状态显著更高（云端的跨模型代理指标弱倾向支持这个方向，
+且和 `timescale_probe.csv` 的"churn 大概率良性"结论一致），"压制策略抖动"
+那条改动方向（CHAIN 风格正则化）可以从计划里划掉；如果关键状态更高，
+说明抖动确实可能伤到关键决策，这条不能划掉。
+
+**结果回填到**：`docs/research/LAYER0-RESULTS.md` 实验 D 新增一段，明确标注
+"这次是真正的同次训练 churn 测量"，替换掉云端那段"跨模型代理，仅供参考"
+的限定语。
+
+### 新-2【可选，锦上添花】验证 oracle hazard 的非单调曲线是不是真的
+
+**背景**：云端在 `oracle_hazard.mjs` 上扫了前瞻深度 N=5 到 200（每组 400 局），
+发现 hazard **不是单调下降到某个平台，而是先降后升**：N=120 时见底 0.706%，
+N=160/200 又回升到 0.88%/1.09%。云端给出的解释是"续跑策略（chase_gap 本身）
+的固有寿命尺度和前瞻深度撞在一起，前瞻窗口太长时安全检查失去判别力"——
+这是**推测**，没有专门验证。
+
+**如果本机有空且好奇**：可以测一下"两个分支都被判不安全"（bothUnsafe）的
+比例随 N 的变化曲线，如果这个比例在 N>120 后急剧上升，就支持云端的解释；
+如果不是，说明另有原因。`oracle_hazard.mjs` 目前没有暴露这个统计量，需要
+加几行计数（可以参考它内部 `oracleAction` 的调用方式，或者直接抄
+`web/tools/lookahead_lib.mjs: oracleAction` 的逻辑自己写一份带计数的版本）。
+**这条不影响任何已有结论**，纯粹是为了把"先降后升"这个现象解释清楚，
+优先级低于新-1。
+
+---
+
+
 > **和第三版的关系**：`git log` 最新提交仍是第三版写的 `49a05dd`——本机在
 > 这一轮检索期间**没有新的提交**，所以第三版清单的 #1（两个种子的诊断
 > 训练）按规矩视为**仍未完成**，原样保留置顶，不重复发一份新的。
