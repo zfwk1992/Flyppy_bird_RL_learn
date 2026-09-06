@@ -49,8 +49,9 @@ function currentPipeIdx(g) {
 }
 function pipeCenter(p) { return p.y + PIPE_HEIGHT + p.gap / 2.0; }
 
-const deathRows = [];   // 每局一条：死亡几何 + Q 轨迹
+const deathRows = [];   // 只含真正死亡的局：死亡几何 + Q 轨迹
 const passRows = [];    // 每次成功通过一条：偏离中心
+const allScores = [];   // 每局一条，含截断局，只用于报平均分
 
 for (let ep = 0; ep < N; ep++) {
   const game = new FlappyGame({ seed: SEED_BASE + ep, hitmasks: HITMASKS });
@@ -65,6 +66,7 @@ for (let ep = 0; ep < N; ep++) {
   let curDeltaCenter = null;
   let curSpacing = null;
   let last = null;
+  let died = false;
 
   for (let i = 0; i < 20000; i++) {
     if (i % FRAME_SKIP === 0) {
@@ -108,19 +110,25 @@ for (let ep = 0; ep < N; ep++) {
       // 用踏入 step() 之前记录的 off/gap（那是"刚越过"那一刻之前的状态）
       passRows.push({ ep, off: last.off, gap: last.gap });
     }
-    if (r.done) break;
+    if (r.done) { died = true; break; }
   }
 
-  const trace = qTrace.map((t, i) => ({ t: i - qTrace.length + 1, ...t }));
-  deathRows.push({
-    ep, score: game.score, gap: last.gap, off: last.off,
-    deltaCenter: last.deltaCenter, spacing: last.spacing, trace,
-  });
+  // 撞上帧数上限但没死（右删失）不是"死亡几何"，混进去会用一个中途飞行的
+  // 随机状态冒充死因——只有真的 done 才算一条死亡样本。
+  allScores.push(game.score);
+  if (died) {
+    const trace = qTrace.map((t, i) => ({ t: i - qTrace.length + 1, ...t }));
+    deathRows.push({
+      ep, score: game.score, gap: last.gap, off: last.off,
+      deltaCenter: last.deltaCenter, spacing: last.spacing, trace,
+    });
+  }
   console.log(`第 ${String(ep + 1).padStart(3)} 局: ${String(game.score).padStart(4)} 根`
-    + `  死时缝隙=${last.gap.toFixed(0)}px  偏离中心=${last.off > 0 ? '+' : ''}${last.off.toFixed(0)}px`
-    + `  Δcenter=${last.deltaCenter === null ? 'n/a' : last.deltaCenter.toFixed(0)}`
-    + `  spacing=${last.spacing === null ? 'n/a' : last.spacing.toFixed(0)}`
-    + `  死前maxQ(t-1)=${trace.length ? trace[trace.length - 1].maxQ.toFixed(2) : 'n/a'}`);
+    + `  ${died ? `死时缝隙=${last.gap.toFixed(0)}px  偏离中心=${last.off > 0 ? '+' : ''}${last.off.toFixed(0)}px`
+      + `  Δcenter=${last.deltaCenter === null ? 'n/a' : last.deltaCenter.toFixed(0)}`
+      + `  spacing=${last.spacing === null ? 'n/a' : last.spacing.toFixed(0)}`
+      + `  死前maxQ(t-1)=${qTrace.length ? qTrace[qTrace.length - 1].maxQ.toFixed(2) : 'n/a'}`
+      : '截断(未死，帧数上限)——不计入死亡几何/Q轨迹'}`);
 }
 
 // ---------------------------------------------------------------------
@@ -134,7 +142,9 @@ function median(a) {
 }
 
 console.log('\n=========== 死亡几何汇总 ===========');
-console.log(`局数 ${deathRows.length}，平均分 ${mean(deathRows.map((r) => r.score)).toFixed(1)}`);
+console.log(`跑了 ${N} 局，真正死亡 ${deathRows.length} 局`
+  + `（${N - deathRows.length} 局撞上帧数上限被截断，未计入下面的死亡几何/Q轨迹）`);
+console.log(`平均分（含截断局，未做删失校正） ${mean(allScores).toFixed(1)}`);
 const withDelta = deathRows.filter((r) => r.deltaCenter !== null);
 console.log(`死亡缝隙宽度：中位 ${median(deathRows.map((r) => r.gap)).toFixed(0)}px`
   + `（训练分布 85-165 均匀采样，期望中位 125）`);
