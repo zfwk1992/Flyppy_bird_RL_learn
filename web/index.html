@@ -90,7 +90,10 @@
   button:hover { border-color: #43503a; }
   kbd { background:#1b2017; border:1px solid var(--rule); border-radius:3px;
         padding:1px 6px; font-family: ui-monospace, Consolas, monospace; font-size:11px; }
-  #boot { text-align: center; color: var(--dim); font-size: 13px; padding: 40px 0; }
+  /* 加载进度：2.5 MB 权重在慢 4G 上要十几秒，没有进度反馈的空白首屏
+     是真实的跳出率损耗。条子放在玩家那一侧的遮罩里。 */
+  .bootbar { width: 72%; height: 3px; background: #262c20; border-radius: 2px; overflow: hidden; }
+  .bootbar i { display: block; height: 100%; width: 0; background: var(--ai); transition: width .15s linear; }
 
   /* ---- 讲解区：正常的可滚动阅读排版，不受上面 user-select:none 影响 ---- */
   #learn {
@@ -143,9 +146,9 @@
     <p class="tagline">Same game, same physics, same pipe sequence &mdash; and the agent sees only pixels.</p>
   </header>
 
-  <div id="boot">loading the network (2.5&nbsp;MB)&hellip;</div>
-
-  <div id="arena" hidden>
+  <!-- 对战区一开始就显示，不再等 2.5 MB 权重下完 —— 先把画面和布局摆出来，
+       加载状态放进玩家那一侧的遮罩里。 -->
+  <div id="arena">
     <section class="side you">
       <div class="who"><span>You</span><small>tap / space</small></div>
       <div class="stage" id="youStage">
@@ -164,6 +167,7 @@
       <div class="stage">
         <canvas id="aiCanvas" width="288" height="512"></canvas>
         <div class="live" id="aiLive">0</div>
+        <div class="veil" id="aiVeil" hidden></div>
       </div>
       <div class="stats">
         <div><span>best</span><b id="aiBest">0</b></div>
@@ -316,7 +320,6 @@
 import { FlappyGame } from './game.js';
 import { loadSprites, Renderer } from './render.js';
 import { HITMASKS } from './assets/hitmasks.js';
-import { createAi } from './ai.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -326,144 +329,274 @@ const randomSeed = () => (Date.now() ^ (Math.random() * 0x7fffffff)) >>> 0;
 let seed = randomSeed();
 
 let you = null, aiGame = null;
-let youState = 'idle';          // idle | playing | dead
+let youState = 'loading';       // loading | idle | playing | dead
 let flapQueued = false;
+let youAlive = true, aiAlive = true;
 const best = { you: 0, ai: 0 };
 // rounds = 打完的局数；aiOutlasted = 其中"你先撞、AI 还在飞"的局数。
-// 锁步之后 AI 的当前分数必然约等于你的（同一组管道、同一帧），所以"谁分高"
-// 已经不是有意义的对照了 —— 有意义的是**每一局是不是你先掉下去**。
 const count = { rounds: 0, aiOutlasted: 0 };
 
-const [sprites, aiPlayer] = await Promise.all([loadSprites(), createAi()]);
+/* ------------------------------------------------------------------
+   AI 的动作计划：主线程**一次推理都不做**
+
+   推理原来是同步跑在这个 rAF 回调里的。桌面 45 ms / 预算 133 ms 没问题，
+   但实测中端手机 178 ms、低端 276 ms —— 超预算，整个页面被堵住，
+   渲染掉到 9.5 / 6.3 fps，连玩家自己那只鸟都跟着卡。
+
+   现在改成：worker 按 seed 预跑出**逐帧动作**，这边只回放。
+   之所以可行，是因为 **AI 那一局与玩家的操作完全无关** —— aiGame 是独立
+   实例，管道只由 seed 决定，动作只由它自己看到的画面决定。同一个 seed +
+   同一串动作喂进同一份 game.js，轨迹**逐位一致**，不是近似。
+   所以 AI 没有被削弱（plan.md 第八节），只是换了执行的线程。
+   ------------------------------------------------------------------ */
+let plan = [];                  // 逐帧动作，worker 分块送来
+let planSeed = -1;
+let planEnded = false;          // worker 说这一局 AI 已经撞了
+let aiFrame = 0;                // 回放到第几帧
+let aiPlayer = null;            // 只有退化路径（worker 不可用）才有
+// 预取：玩家一撞，就让 worker 去算**下一局**的开头。不预取的话每开一局
+// 计划都是空的，worker 得从零算起，开局必然卡一下 —— 手机上一次决策 178 ms，
+// 那就是每局开头一个肉眼可见的顿挫。玩家看结算的那两秒正好够抢出缓冲。
+let prefetch = null;            // { seed, plan, ended }
+let ready = false;
+let lastMs = 0, stalls = 0;
+
+// 预跑多远。600 帧 = 20 秒飞行量。太小在慢机器上会频繁等待，太大是白烧 CPU
+// —— 玩家一重开，没用上的部分全扔。
+const LOOKAHEAD = 600;
+
+const sprites = await loadSprites();
 const youRender = new Renderer($('youCanvas').getContext('2d'), sprites);
 const aiRender = new Renderer($('aiCanvas').getContext('2d'), sprites);
-$('boot').hidden = true;
-$('arena').hidden = false;
+
+/* ---- worker 接线；起不来就退回主线程同步推理（老路径，卡但能玩） ---- */
+let worker = null;
+try {
+  worker = new Worker('./ai-worker.js', { type: 'module' });
+} catch { worker = null; }
+
+if (worker) {
+  worker.onerror = () => { worker = null; fallbackToMainThread(); };
+  worker.onmessage = (e) => {
+    const m = e.data;
+    if (m.type === 'progress') {
+      if (youState === 'loading') {
+        const pct = Math.round(100 * m.loaded / m.total);
+        const fill = $('bootFill'); if (fill) fill.style.width = pct + '%';
+        const lab = $('bootPct'); if (lab) lab.textContent = pct + '% of 2.5 MB';
+      }
+      return;
+    }
+    if (m.type === 'ready') { ready = true; setYouState('idle'); return; }
+    if (m.type === 'error') { worker = null; fallbackToMainThread(); return; }
+    if (m.type === 'plan') {
+      if (m.msN) lastMs = m.ms;
+      // 按 seed 分流：当前这一局的接到 plan，预取的那一局接到 prefetch.plan
+      if (m.seed === planSeed) {
+        for (let i = 0; i < m.actions.length; i++) plan[m.from + i] = m.actions[i];
+        if (m.ended) planEnded = true;
+      } else if (prefetch && m.seed === prefetch.seed) {
+        for (let i = 0; i < m.actions.length; i++) prefetch.plan[m.from + i] = m.actions[i];
+        if (m.ended) prefetch.ended = true;
+      }
+      return;                                   // 其余都是过期的残留消息，扔掉
+    }
+  };
+} else {
+  fallbackToMainThread();
+}
+
+/** worker 用不了（老浏览器 / 加载失败）就回到原来的同步推理路径。 */
+async function fallbackToMainThread() {
+  if (aiPlayer) return;
+  try {
+    const { createAi } = await import('./ai.js');
+    aiPlayer = await createAi();
+    ready = true;
+    beginRound(null);
+    setYouState('idle');
+  } catch (err) {
+    setYouState('idle', '<b>could not load the agent</b><span>try a reload</span>');
+  }
+}
 
 /**
  * 开新的一局：**两边同时**用同一个新 seed 重来，帧数都归零。
  *
- * 每局换 seed 是必须的，不是随手加的。AI 是确定性的（eval_epsilon=0，
- * 网络里也没有 Dropout/BatchNorm），所以 seed 不变的话它每一局都会
- * **一模一样地重放同一条轨迹、死在同一根管道上**。原来的版本整个会话共用
- * 一个 seed，运气不好开局抽到一条早死的序列，就会看着它一遍遍死在第 12 根，
- * 像是模型坏了 —— 其实只是同一局被放了很多遍。
+ * 每局换 seed 是必须的。AI 是确定性的（eval_epsilon=0，网络里也没有
+ * Dropout/BatchNorm），seed 不变它就会**逐帧重放同一条轨迹、死在同一根管道上**。
+ * 第一版整个会话共用一个 seed，运气不好抽到一条早死的序列，就会看着它一遍遍
+ * 死在第 12 根，像是模型坏了 —— 其实只是同一局被放了很多遍。
  */
-function newRound() {
-  seed = randomSeed();
+function beginRound(bundle) {
+  // bundle = 玩家死后预取好的那一局（seed + 已经算出来的一段计划）；
+  // 传 null 就现开一局，worker 从头算。
+  const b = bundle || { seed: randomSeed(), plan: [], ended: false };
+  seed = b.seed;
   you = new FlappyGame({ seed, hitmasks: HITMASKS });
   you.reset();
   aiGame = new FlappyGame({ seed, hitmasks: HITMASKS });
   aiGame.reset();
-  aiPlayer.reset();
+  youAlive = true; aiAlive = true;
   flapQueued = false;
+  plan = b.plan; planSeed = seed; planEnded = b.ended; aiFrame = 0;
+  prefetch = null;
+  // 预取过的话 worker 已经在算这一局了，只要继续要；否则从头开一个
+  if (worker) worker.postMessage({ type: bundle ? 'want' : 'start', seed, want: LOOKAHEAD });
+  else if (aiPlayer) aiPlayer.reset();
   $('youLive').textContent = '0';
   $('aiLive').textContent = '0';
+  $('aiVeil').hidden = true;
 }
 
 const IDLE_VEIL = '<b>Tap to fly</b><span>you and the AI start together</span>';
+const LOADING_VEIL = '<b>warming up the agent</b>'
+  + '<div class="bootbar"><i id="bootFill"></i></div>'
+  + '<span id="bootPct">2.5 MB of weights</span>';
 
 function setYouState(s, summary) {
   youState = s;
   const veil = $('youVeil');
   if (s === 'playing') { veil.hidden = true; return; }
   veil.hidden = false;
-  veil.innerHTML = summary || IDLE_VEIL;
+  veil.innerHTML = s === 'loading' ? LOADING_VEIL : (summary || IDLE_VEIL);
 }
 
 /**
- * 一局结束：**谁先撞都算这一局结束，两边同时重开。**
+ * 玩家撞了 —— 这一局对**你**来说结束了，但 **AI 不停**。
  *
- * 保持锁步是刻意的 —— 两只鸟必须始终停在同一根管道、同一帧上，
- * 否则左右并排就不是对照，只是两个各飞各的画面。
+ * plan.md 第八节把"玩家死后 AI 继续飞、让差距可见"定成卖点。中间一版为了
+ * 保证左右在同一根管道上，改成了"谁先撞两边同时归零"，代价是 AI 的分数
+ * 永远等于你的 —— 屏幕上两个大数字全程相等，"它比你强"根本看不出来。
+ * 现在两者兼顾：**两边仍然同一个 seed、同一帧起跑**（对照成立），
+ * 但你掉下去之后它继续飞，你犹豫的那几秒就能看着它的计数往上爬。
+ * 下一局由你点击触发，届时两边**一起**用新 seed 重开，锁步不破。
  */
-function endRound(who) {
-  const youScore = you.score;
-  const aiScore = aiGame.score;
-  const aiAlive = !aiGame.done;
+function endRound() {
   count.rounds++;
-  if (youScore > best.you) best.you = youScore;
-  if (aiScore > best.ai) best.ai = aiScore;
-  if (who === 'you' && aiAlive) count.aiOutlasted++;
+  if (you.score > best.you) best.you = you.score;
+  if (aiAlive) count.aiOutlasted++;
   $('youBest').textContent = String(best.you);
   $('youRounds').textContent = String(count.rounds);
-  $('aiBest').textContent = String(best.ai);
   $('aiOutlasted').textContent = `${count.aiOutlasted}/${count.rounds}`;
 
-  const summary = who === 'you'
-    ? `<b>You crashed at ${youScore}</b>`
-      + '<span>the AI was still flying &mdash; tap for a fresh sequence</span>'
-    : `<b>The AI crashed at ${aiScore}</b>`
-      + `<span>you were at ${youScore} &mdash; tap for a fresh sequence</span>`;
-  newRound();                    // 立刻两边一起重置，不放 Game Over 动画
+  // 玩家已经出局，worker 可以腾出手去算下一局了。当前这一局的计划不再往前
+  // 补 —— 死的时候手上还有约 LOOKAHEAD 帧（20 秒）的余量，够 AI 在你犹豫的
+  // 这几秒里继续飞。
+  if (worker) {
+    prefetch = { seed: randomSeed(), plan: [], ended: false };
+    worker.postMessage({ type: 'start', seed: prefetch.seed, want: LOOKAHEAD });
+  }
+
+  const summary = aiAlive
+    ? `<b>You crashed at ${you.score}</b>`
+      + '<span>the AI is still flying &mdash; watch its counter, then tap</span>'
+    : `<b>You crashed at ${you.score}</b>`
+      + '<span>you outlasted it this round &mdash; tap to go again</span>';
   setYouState('dead', summary);
 }
 
 // 一次输入同时承担三件事：开始、扇翅、重开。死后**立刻**重开、不放 Game Over
-// 动画 —— plan.md 定了不削弱 AI，体验靠"秒重开"维持，任何停顿都会让人
-// 失去再试一次的欲望。
+// 动画 —— 不削弱 AI，体验靠"秒重开"维持，任何停顿都会让人失去再试一次的欲望。
 function press() {
+  if (!ready) return;                        // 权重还没好，点了也开不了
+  if (youState === 'dead') beginRound(prefetch);  // 这一次点击 = 开新的一局
   if (youState !== 'playing') setYouState('playing');
   flapQueued = true;
 }
 
 addEventListener('keydown', (e) => {
   if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); press(); }
-  else if (e.code === 'KeyR') { newRound(); setYouState('playing'); flapQueued = true; }
+  else if (e.code === 'KeyR' && ready) { beginRound(prefetch); setYouState('playing'); flapQueued = true; }
 });
-// pointerdown 而不是 click：click 在移动端有约 300ms 延迟，游戏受不了
-$('youStage').addEventListener('pointerdown', (e) => { e.preventDefault(); press(); });
+// pointerdown 而不是 click：click 在移动端有约 300ms 延迟，游戏受不了。
+// 绑在整个 arena 上而不是只绑玩家那半边 —— 手机上单边只有约 160px 宽，太容易点空。
+$('arena').addEventListener('pointerdown', (e) => { e.preventDefault(); press(); });
 
-$('reseed').addEventListener('click', () => { newRound(); setYouState('idle'); });
+$('reseed').addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!ready) return;
+  beginRound(null); setYouState('idle');
+});
 
 const STEP_MS = 1000 / 30;      // 与 play.py 的实时观看帧率一致
 let acc = 0;
 let last = performance.now();
-let perfAcc = 0, perfN = 0;
 
-/** 推进一帧：两边**在同一次迭代里各走一步**，帧数因此永远相等。 */
+/**
+ * 推进一帧。返回 false 表示这一拍没走成（AI 的计划还没算到），
+ * 调用方要把时间留着下一帧再试，**不能**让玩家单独往前走 ——
+ * 一旦两边帧数错开，左右就不在同一根管道上了，对照立刻失效。
+ */
 function stepBoth() {
-  // decide() 必须在 step() 之前 —— 观测的是当前这一帧的画面，与训练时序一致
-  const aiAction = aiPlayer.decide(aiGame);
-  if (aiPlayer.lastMs) { perfAcc += aiPlayer.lastMs; perfN++; aiPlayer.lastMs = 0; }
-  const aiDone = aiGame.step(aiAction).done;
+  if (aiAlive) {
+    let a;
+    if (aiPlayer) {
+      a = aiPlayer.decide(aiGame);        // 退化路径：主线程同步推理
+    } else if (aiFrame < plan.length) {
+      a = plan[aiFrame];                  // 正常路径：回放 worker 算好的动作
+    } else {
+      stalls++;
+      return false;                       // 计划没跟上，整体等一拍
+    }
+    aiFrame++;
+    if (aiGame.step(a).done) {
+      aiAlive = false;
+      $('aiVeil').hidden = false;
+      $('aiVeil').innerHTML = `<b>The AI crashed at ${aiGame.score}</b>`
+        + (youAlive ? '<span>you are still flying</span>' : '');
+    }
+    // 让 worker 始终保持大约 LOOKAHEAD 的余量。玩家已经出局的话就不再要了 ——
+    // 那时 worker 正在算下一局，别把它拽回来。
+    if (worker && !planEnded && youAlive && plan.length - aiFrame < LOOKAHEAD / 2) {
+      worker.postMessage({ type: 'want', seed: planSeed, want: aiFrame + LOOKAHEAD });
+    }
+  }
 
-  const youAction = flapQueued ? 1 : 0;
-  flapQueued = false;
-  const youDone = you.step(youAction).done;
+  if (youAlive && youState === 'playing') {
+    const act = flapQueued ? 1 : 0;
+    flapQueued = false;
+    if (you.step(act).done) { youAlive = false; endRound(); }
+  }
 
   $('youLive').textContent = String(you.score);
   $('aiLive').textContent = String(aiGame.score);
-  if (youDone || aiDone) endRound(youDone ? 'you' : 'ai');
-  return youDone || aiDone;
+  // AI 还在飞的时候 best 要跟着涨 —— 否则看不出它飞到哪儿去了
+  if (aiGame.score > best.ai) { best.ai = aiGame.score; $('aiBest').textContent = String(best.ai); }
+  return true;
 }
 
 function tick(now) {
   const dt = now - last;
   last = now;
-  if (youState === 'playing') {
+  // 玩家在玩、或者玩家已经掉下去但 AI 还在飞 —— 两种情况都要推进
+  const running = youState === 'playing' || (youState === 'dead' && aiAlive);
+  if (running) {
     // 切后台回来时 dt 可能是几秒，别让物理一次性追补上百帧
     acc = Math.min(acc + dt, STEP_MS * 4);
     while (acc >= STEP_MS) {
+      if (!stepBoth()) break;   // 没走成就把时间留着，下一帧再试
       acc -= STEP_MS;
-      if (stepBoth()) break;        // 这一局结束了，剩下的追帧丢掉
     }
   } else {
-    // 没在玩就两边都不动。AI 不能在等待期间偷跑 —— 一旦它比玩家多走了几帧，
-    // 后面就不在同一根管道上了，左右对照立刻失效。
     acc = 0;
   }
   youRender.draw(you.observeState());
   aiRender.draw(aiGame.observeState());
-  if (perfN >= 30) {
-    $('perf').textContent = `inference ${(perfAcc / perfN).toFixed(0)} ms / decision`;
-    perfAcc = 0; perfN = 0;
+  if (lastMs) {
+    $('perf').textContent = aiPlayer
+      ? `inference ${lastMs.toFixed(0)} ms / decision`
+      : `inference ${lastMs.toFixed(0)} ms / decision, off the main thread`;
   }
   requestAnimationFrame(tick);
 }
 
-newRound();
-setYouState('idle');
+// 调试用：headless 里量缓冲跟不跟得上（stalls 应当接近 0）。不影响页面行为。
+window.__stats = () => ({ plan: plan.length, aiFrame, stalls, lastMs, ready,
+  worker: !!worker, prefetch: prefetch ? prefetch.plan.length : -1 });
+
+beginRound(null);
+setYouState('loading');
 requestAnimationFrame(tick);
 </script>
 </body>
