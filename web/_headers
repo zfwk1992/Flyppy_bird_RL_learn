@@ -1,0 +1,21 @@
+# Cloudflare Pages 的响应头配置。部署时把 web/ 设为输出目录，这个文件会被自动拾取
+# （文件名、格式是 Pages 的约定，不能改名，见 https://developers.cloudflare.com/pages/configuration/headers/）。
+
+# 模型权重和精灵数据不带版本号在文件名里，但基本不会变——变了会跟着一次新的部署
+# 一起失效（Cloudflare Pages 每次部署换一批资源 URL 摘要不适用于这种没走构建步骤的
+# 纯静态站点，所以这里给一个折中的中等时长强缓存，不是 immutable）。
+/model/*
+  Cache-Control: public, max-age=86400
+/assets/*
+  Cache-Control: public, max-age=86400
+
+# 页面本身要能立刻拿到更新（改文案、修 bug），别让浏览器缓存 HTML。
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+/
+  Cache-Control: public, max-age=0, must-revalidate
+
+# 基本安全头，静态站点没有表单/登录，给个保守默认值即可。
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin

@@ -1,0 +1,770 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>You vs. a Deep-RL Agent &mdash; Flappy Bird</title>
+<meta name="description" content="Play against a Dueling Double-DQN trained from raw pixels only. It clears 97 pipes on average; humans clear about 7. Same seed, same physics, right in your browser." />
+<!-- OG/Twitter：og:image 用相对路径，指向仓库根 web/ 目录下的 assets/og-card.jpg。
+     LinkedIn/Twitter/Facebook 的抓取器都会按 og:url（或页面自身 URL）解析相对路径，
+     部署到 Cloudflare Pages 之后用 LinkedIn Post Inspector 走一遍确认即可，
+     不需要在这里硬编码还没定下来的域名。见 web/DEPLOY.md。 -->
+<meta property="og:type" content="website" />
+<meta property="og:title" content="You vs. a Deep-RL Agent &mdash; Flappy Bird" />
+<meta property="og:description" content="Play against a Dueling Double-DQN trained from raw pixels only. It clears 97 pipes on average; humans clear about 7." />
+<meta property="og:image" content="assets/og-card.jpg" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="You vs. a Deep-RL Agent &mdash; Flappy Bird" />
+<meta name="twitter:description" content="Trained entirely from pixels. 96.9 avg pipes for the AI vs 6.8 for humans. Try to beat it." />
+<meta name="twitter:image" content="assets/og-card.jpg" />
+<style>
+  :root {
+    --ink:#e8ece4; --dim:#8b9384; --rule:#2a2f26; --bg:#0e110d; --panel:#141812;
+    --you:#e0b341; --ai:#4fb0e0;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; min-height: 100%; background: var(--bg); color: var(--ink);
+    font-family: system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-user-select: none; user-select: none;
+    overscroll-behavior: none; touch-action: manipulation;
+  }
+  #app {
+    max-width: 900px; margin: 0 auto; padding: 14px 12px 24px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  header { text-align: center; }
+  h1 { font-size: clamp(17px, 4.4vw, 26px); margin: 0 0 4px; letter-spacing: -.01em; }
+  .tagline { font-size: clamp(11px, 2.8vw, 13px); color: var(--dim); margin: 0; }
+
+  #arena { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .side {
+    background: var(--panel); border: 1px solid var(--rule); border-radius: 8px;
+    padding: 8px; display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  }
+  .who {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 6px;
+    font-size: clamp(11px, 2.8vw, 13px); font-weight: 700; letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .side.you .who { color: var(--you); }
+  .side.ai  .who { color: var(--ai); }
+  .who small { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--dim); }
+
+  /* 画布是 288x512（宽高比 0.5625）。宽度跟随栏宽，但再按视口高度封顶，
+     否则在笔记本上两块画布会把页脚顶出屏幕。0.5625 就是 288/512。 */
+  .stage { position: relative; width: min(100%, calc(56vh * 0.5625)); margin: 0 auto; }
+  canvas {
+    display: block; width: 100%; height: auto; background: #000;
+    image-rendering: pixelated; border-radius: 4px;
+  }
+  .live {
+    position: absolute; top: 6px; left: 0; right: 0; text-align: center;
+    font-size: clamp(20px, 6vw, 34px); font-weight: 800; pointer-events: none;
+    font-variant-numeric: tabular-nums; text-shadow: 0 2px 0 #000, 0 0 10px #000;
+  }
+  .side.you .live { color: var(--you); }
+  .side.ai  .live { color: var(--ai); }
+  .veil {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 6px; text-align: center;
+    background: rgba(0,0,0,.68); border-radius: 4px; padding: 8px;
+    font-size: clamp(11px, 2.9vw, 14px); line-height: 1.45;
+  }
+  .veil[hidden] { display: none; }
+  .veil b { font-size: clamp(13px, 3.4vw, 17px); }
+
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px;
+           font-size: clamp(10px, 2.6vw, 12px); font-variant-numeric: tabular-nums; }
+  .stats div { display: flex; justify-content: space-between; gap: 6px; color: var(--dim); }
+  .stats b { color: var(--ink); font-weight: 600; }
+
+  footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+           gap: 8px 16px; font-size: 12px; color: var(--dim); text-align: center; }
+  button {
+    background: #1b2017; color: var(--ink); border: 1px solid var(--rule);
+    border-radius: 5px; padding: 5px 12px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  button:hover { border-color: #43503a; }
+  kbd { background:#1b2017; border:1px solid var(--rule); border-radius:3px;
+        padding:1px 6px; font-family: ui-monospace, Consolas, monospace; font-size:11px; }
+  /* 加载进度：2.5 MB 权重在慢 4G 上要十几秒，没有进度反馈的空白首屏
+     是真实的跳出率损耗。条子放在玩家那一侧的遮罩里。 */
+  .bootbar { width: 72%; height: 3px; background: #262c20; border-radius: 2px; overflow: hidden; }
+  .bootbar i { display: block; height: 100%; width: 0; background: var(--ai); transition: width .15s linear; }
+
+  /* ---- 讲解区：正常的可滚动阅读排版，不受上面 user-select:none 影响 ---- */
+  #learn {
+    max-width: 640px; margin: 8px auto 0; padding-top: 8px;
+    border-top: 1px solid var(--rule);
+    -webkit-user-select: text; user-select: text;
+  }
+  #learn h2 {
+    font-size: clamp(15px, 3.6vw, 18px); margin: 30px 0 8px; color: var(--ink);
+  }
+  #learn h2 small { display: block; font-size: 11px; font-weight: 400; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--dim); margin-bottom: 3px; }
+  #learn p { font-size: clamp(13px, 3vw, 14.5px); line-height: 1.6; color: #c7cec0; margin: 0 0 10px; }
+  #learn code { background: #1b2017; border: 1px solid var(--rule); border-radius: 3px;
+    padding: 1px 5px; font-family: ui-monospace, Consolas, monospace; font-size: .92em; color: var(--ink); }
+  #learn .callout {
+    background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--ai);
+    border-radius: 0 6px 6px 0; padding: 10px 12px; margin: 12px 0;
+  }
+  #learn .callout p { margin: 0; color: var(--ink); }
+  #learn .stat-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+  #learn .stat {
+    flex: 1 1 130px; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
+    padding: 8px 10px;
+  }
+  #learn .stat b { display: block; font-size: clamp(16px, 4vw, 20px); font-variant-numeric: tabular-nums; }
+  #learn .stat span { font-size: 10.5px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+  #learn .stat.you b { color: var(--you); }
+  #learn .stat.ai b { color: var(--ai); }
+
+  /* ---- 图示 ----
+     讲解区原来是六段大段文字，读者在手机上要滚很久才看到"这网络长什么样"。
+     现在改成"一张图 + 一两句话"，图一律用内联 SVG：
+       - 内联才能继承上面 :root 的配色变量，换主题不用改几十个 fill；
+       - viewBox 定在 260~270 宽，配合 max-width 420px，在 320px 的手机上
+         缩放比约 1.1、在桌面上约 1.6，7~9px 的字号两头都还看得清。
+         （画得太宽会在手机上把字缩成 5px，这是最容易犯的错。） */
+  #learn figure { margin: 16px 0 18px; }
+  #learn figure svg { display: block; width: 100%; height: auto; max-width: 420px; margin: 0 auto; }
+  #learn figcaption { font-size: 11.5px; line-height: 1.5; color: var(--dim);
+    text-align: center; margin-top: 8px; }
+  #learn svg text { font-family: inherit; fill: var(--ink); }
+  #learn svg .t-dim { fill: var(--dim); }
+  #learn svg .t-you { fill: var(--you); }
+  #learn svg .t-ai  { fill: var(--ai); }
+  #learn svg .bx { fill: var(--panel); stroke: var(--rule); stroke-width: 1; }
+  #learn svg .bx-you { stroke: var(--you); }
+  #learn svg .bx-ai  { stroke: var(--ai); }
+  #learn svg .bx-ink { stroke: var(--ink); }
+  #learn svg .ln { stroke: var(--dim); stroke-width: 1; fill: none; }
+  #learn svg .ln-ai { stroke: var(--ai); }
+  /* 箭头头部画成小三角形而不是 <marker> —— marker 的 id 在同一个页面里
+     多个 SVG 之间会撞，画三角形没有这个问题。 */
+  #learn svg .hd { fill: var(--dim); stroke: none; }
+  #learn svg .hd-ai { fill: var(--ai); }
+
+  #learn .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+  #learn .chip { background: var(--panel); border: 1px solid var(--rule); border-radius: 999px;
+    padding: 4px 11px; font-size: 11px; color: var(--dim); }
+  #learn .chip b { color: var(--ink); font-weight: 600; }
+
+  #learn footer.credits { border-top: 1px solid var(--rule); margin-top: 26px; padding-top: 14px; }
+  #learn footer.credits a { color: var(--ai); }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>You vs. a deep-RL agent</h1>
+    <p class="tagline">Same game, same physics, same pipe sequence &mdash; and the agent sees only pixels.</p>
+  </header>
+
+  <!-- 对战区一开始就显示，不再等 2.5 MB 权重下完 —— 先把画面和布局摆出来，
+       加载状态放进玩家那一侧的遮罩里。 -->
+  <div id="arena">
+    <section class="side you">
+      <div class="who"><span>You</span><small>tap / space</small></div>
+      <div class="stage" id="youStage">
+        <canvas id="youCanvas" width="288" height="512"></canvas>
+        <div class="live" id="youLive">0</div>
+        <div class="veil" id="youVeil"><b>Tap to fly</b><span>space, click or tap</span></div>
+      </div>
+      <div class="stats">
+        <div><span>best</span><b id="youBest">0</b></div>
+        <div><span>rounds</span><b id="youRounds">0</b></div>
+      </div>
+    </section>
+
+    <section class="side ai">
+      <div class="who"><span>AI</span><small>pixels &rarr; Q</small></div>
+      <div class="stage">
+        <canvas id="aiCanvas" width="288" height="512"></canvas>
+        <div class="live" id="aiLive">0</div>
+        <div class="veil" id="aiVeil" hidden></div>
+      </div>
+      <div class="stats">
+        <div><span>best</span><b id="aiBest">0</b></div>
+        <div><span>outlasted you</span><b id="aiOutlasted">0/0</b></div>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <span><kbd>space</kbd> flap &middot; <kbd>R</kbd> restart</span>
+    <button id="reseed">new pipe sequence</button>
+    <span id="perf"></span>
+  </footer>
+
+  <section id="learn">
+    <h2><small>Input</small>It only ever sees pixels</h2>
+    <figure>
+      <svg viewBox="0 0 256 132" role="img"
+           aria-label="The 288 by 512 game screen is shrunk and thresholded into an 80 by 128 black-and-white image; four consecutive ones are stacked to form the network input.">
+        <!-- 游戏画面 -->
+        <rect class="bx" x="10" y="16" width="48" height="86" rx="3"/>
+        <rect x="26" y="16" width="10" height="28" fill="#3d5a34"/>
+        <rect x="26" y="62" width="10" height="40" fill="#3d5a34"/>
+        <rect x="44" y="16" width="10" height="44" fill="#3d5a34"/>
+        <rect x="44" y="78" width="10" height="24" fill="#3d5a34"/>
+        <circle cx="19" cy="58" r="3.5" fill="var(--you)"/>
+        <text class="t-dim" x="34" y="114" font-size="8" text-anchor="middle">288 &#215; 512</text>
+
+        <!-- 两行标注挤在箭头上方；间距是量出来的，缩到 34 以下会压到右边那个框 -->
+        <text class="t-dim" x="80" y="42" font-size="7.5" text-anchor="middle">shrink</text>
+        <text class="t-dim" x="80" y="52" font-size="7.5" text-anchor="middle">threshold</text>
+        <path class="ln" d="M62,60 H96"/>
+        <path class="hd" d="M101,60 l-6,-3.5 v7 z"/>
+
+        <!-- 二值观测 -->
+        <rect x="104" y="28" width="40" height="64" fill="#000" stroke="var(--rule)"/>
+        <rect x="116" y="28" width="8" height="20" fill="var(--ink)"/>
+        <rect x="116" y="59" width="8" height="33" fill="var(--ink)"/>
+        <rect x="133" y="28" width="7" height="32" fill="var(--ink)"/>
+        <rect x="133" y="75" width="7" height="17" fill="var(--ink)"/>
+        <rect x="108" y="57" width="4" height="4" fill="var(--ink)"/>
+        <text class="t-dim" x="124" y="104" font-size="8" text-anchor="middle">80 &#215; 128, 1 bit</text>
+
+        <text class="t-dim" x="165" y="52" font-size="7.5" text-anchor="middle">stack 4</text>
+        <path class="ln" d="M150,60 H179"/>
+        <path class="hd" d="M184,60 l-6,-3.5 v7 z"/>
+
+        <!-- 帧栈：后三张错开画在右下，最前面那张实心 -->
+        <rect x="206" y="38" width="40" height="64" fill="#0b0f0a" stroke="var(--rule)"/>
+        <rect x="200" y="32" width="40" height="64" fill="#0b0f0a" stroke="var(--rule)"/>
+        <rect x="194" y="26" width="40" height="64" fill="#0b0f0a" stroke="var(--rule)"/>
+        <rect x="188" y="20" width="40" height="64" fill="#000" stroke="var(--ink)"/>
+        <rect x="200" y="20" width="8" height="20" fill="var(--ink)"/>
+        <rect x="200" y="51" width="8" height="33" fill="var(--ink)"/>
+        <rect x="217" y="20" width="7" height="32" fill="var(--ink)"/>
+        <rect x="217" y="67" width="7" height="17" fill="var(--ink)"/>
+        <rect x="192" y="49" width="4" height="4" fill="var(--ink)"/>
+        <text class="t-dim" x="215" y="112" font-size="8" text-anchor="middle">4 &#215; 80 &#215; 128</text>
+        <text class="t-dim" x="215" y="123" font-size="7.5" text-anchor="middle">t&#8722;3 &#8230; t</text>
+      </svg>
+      <figcaption>
+        No coordinates, no velocity, no pipe distance &mdash; the same picture you
+        see, shrunk and flattened to one bit per pixel.
+      </figcaption>
+    </figure>
+    <p>
+      One frame can't tell you which way the bird is moving, so the network reads
+      <strong>four</strong> at once. It commits to flap / don't every 4th frame and
+      holds it (<code>frame_skip=4</code>).
+    </p>
+
+    <h2><small>Objective</small>Three numbers, and a guess about the future</h2>
+    <figure>
+      <svg viewBox="0 0 270 148" role="img"
+           aria-label="The network sends an action to the game, the game returns four new frames; reward is plus one for clearing a pipe, minus one for dying, zero otherwise.">
+        <rect class="bx bx-ai" x="14" y="26" width="94" height="42" rx="5"/>
+        <text x="61" y="44" font-size="9.5" text-anchor="middle">Q-network</text>
+        <text class="t-dim" x="61" y="57" font-size="7.5" text-anchor="middle">takes the bigger Q</text>
+
+        <rect class="bx" x="162" y="26" width="94" height="42" rx="5"/>
+        <text x="209" y="44" font-size="9.5" text-anchor="middle">the game</text>
+        <text class="t-dim" x="209" y="57" font-size="7.5" text-anchor="middle">physics + pipes</text>
+
+        <text class="t-ai" x="135" y="30" font-size="8" text-anchor="middle">flap / don't</text>
+        <path class="ln ln-ai" d="M108,38 H152"/>
+        <path class="hd hd-ai" d="M157,38 l-6,-3.5 v7 z"/>
+
+        <path class="ln" d="M162,58 H123"/>
+        <path class="hd" d="M118,58 l6,-3.5 v7 z"/>
+        <text class="t-dim" x="140" y="72" font-size="8" text-anchor="middle">4 new frames + reward</text>
+
+        <rect class="bx" x="14" y="92" width="76" height="38" rx="5"/>
+        <text class="t-ai" x="52" y="112" font-size="15" font-weight="700" text-anchor="middle">+1</text>
+        <text class="t-dim" x="52" y="124" font-size="7.5" text-anchor="middle">clear a pipe</text>
+
+        <rect class="bx" x="97" y="92" width="76" height="38" rx="5"/>
+        <text class="t-you" x="135" y="112" font-size="15" font-weight="700" text-anchor="middle">&#8722;1</text>
+        <text class="t-dim" x="135" y="124" font-size="7.5" text-anchor="middle">die</text>
+
+        <rect class="bx" x="180" y="92" width="76" height="38" rx="5"/>
+        <text class="t-dim" x="218" y="112" font-size="15" font-weight="700" text-anchor="middle">0</text>
+        <text class="t-dim" x="218" y="124" font-size="7.5" text-anchor="middle">every other step</text>
+      </svg>
+      <figcaption>That is the entire reward function.</figcaption>
+    </figure>
+    <p>
+      From that, the network learns <code>Q(s,a)</code>: how much total future reward
+      it expects if it takes action <code>a</code> right now. Acting is just picking
+      the bigger of the two numbers. Training is <strong>Double DQN</strong> &mdash;
+      one network chooses, a slower copy scores &mdash; which curbs, though doesn't
+      eliminate, the optimism that makes a plain DQN over-value everything.
+    </p>
+
+    <h2><small>Architecture</small>1,258,659 parameters</h2>
+    <figure>
+      <svg viewBox="0 0 260 296" role="img"
+           aria-label="Three convolutions reduce the 4 by 80 by 128 input to 64 by 6 by 12, which flattens to 4608, feeds a 256-unit fully connected layer, then splits into a one-output value head and a two-output advantage head recombined as Q equals V plus A minus mean A.">
+        <!-- 三层卷积：空间在缩，通道在长 -->
+        <rect class="bx" x="28" y="24" width="10" height="56"/>
+        <path class="ln" d="M31,24 V80 M34.5,24 V80"/>
+        <text class="t-dim" x="33" y="92" font-size="7.5" text-anchor="middle">4 ch</text>
+        <text class="t-dim" x="33" y="102" font-size="7.5" text-anchor="middle">80&#215;128</text>
+
+        <text class="t-dim" x="57" y="46" font-size="7" text-anchor="middle">8&#215;8 /4</text>
+        <path class="ln" d="M42,60 H67"/>
+        <path class="hd" d="M72,60 l-6,-3.5 v7 z"/>
+
+        <rect class="bx" x="76" y="44" width="20" height="32"/>
+        <path class="ln" d="M81,44 V76 M86,44 V76 M91,44 V76"/>
+        <text class="t-dim" x="86" y="92" font-size="7.5" text-anchor="middle">32 ch</text>
+        <text class="t-dim" x="86" y="102" font-size="7.5" text-anchor="middle">19&#215;31</text>
+
+        <text class="t-dim" x="115" y="46" font-size="7" text-anchor="middle">4&#215;4 /2</text>
+        <path class="ln" d="M100,60 H125"/>
+        <path class="hd" d="M130,60 l-6,-3.5 v7 z"/>
+
+        <rect class="bx" x="134" y="51" width="30" height="18"/>
+        <path class="ln" d="M141,51 V69 M148,51 V69 M155,51 V69"/>
+        <text class="t-dim" x="149" y="92" font-size="7.5" text-anchor="middle">64 ch</text>
+        <text class="t-dim" x="149" y="102" font-size="7.5" text-anchor="middle">8&#215;14</text>
+
+        <text class="t-dim" x="183" y="46" font-size="7" text-anchor="middle">3&#215;3 /1</text>
+        <path class="ln" d="M168,60 H193"/>
+        <path class="hd" d="M198,60 l-6,-3.5 v7 z"/>
+
+        <rect class="bx" x="202" y="53" width="30" height="14"/>
+        <path class="ln" d="M209,53 V67 M216,53 V67 M223,53 V67"/>
+        <text class="t-dim" x="217" y="92" font-size="7.5" text-anchor="middle">64 ch</text>
+        <text class="t-dim" x="217" y="102" font-size="7.5" text-anchor="middle">6&#215;12</text>
+
+        <!-- 走右边下来，避开上面那两行标注 -->
+        <path class="ln" d="M232,60 H244 V120"/>
+        <path class="hd" d="M244,126 l-3.5,-6 h7 z"/>
+
+        <rect class="bx" x="20" y="128" width="224" height="15" rx="2"/>
+        <text x="132" y="139" font-size="8" text-anchor="middle">flatten &#183; 4608</text>
+
+        <path class="ln" d="M132,145 V158"/>
+        <path class="hd" d="M132,164 l-3.5,-6 h7 z"/>
+
+        <rect class="bx" x="70" y="166" width="124" height="15" rx="2"/>
+        <text x="132" y="177" font-size="8" text-anchor="middle">fully connected &#183; 256</text>
+
+        <!-- 分成两个头 -->
+        <path class="ln" d="M132,183 V192 M62,192 H202 M62,192 V200 M202,192 V200"/>
+        <path class="hd" d="M62,206 l-3.5,-6 h7 z"/>
+        <path class="hd" d="M202,206 l-3.5,-6 h7 z"/>
+
+        <rect class="bx bx-you" x="24" y="208" width="76" height="30" rx="4"/>
+        <text class="t-you" x="62" y="223" font-size="9.5" text-anchor="middle">V(s)</text>
+        <text class="t-dim" x="62" y="233" font-size="7" text-anchor="middle">1 number</text>
+
+        <rect class="bx bx-ai" x="164" y="208" width="76" height="30" rx="4"/>
+        <text class="t-ai" x="202" y="223" font-size="9.5" text-anchor="middle">A(s, a)</text>
+        <text class="t-dim" x="202" y="233" font-size="7" text-anchor="middle">2 numbers</text>
+
+        <path class="ln" d="M62,238 V250 M202,238 V250 M62,250 H202 M132,250 V258"/>
+        <path class="hd" d="M132,264 l-3.5,-6 h7 z"/>
+
+        <rect class="bx bx-ink" x="42" y="266" width="180" height="26" rx="4"/>
+        <text x="132" y="278" font-size="9" text-anchor="middle">Q = V + A &#8722; mean(A)</text>
+        <text class="t-dim" x="132" y="288" font-size="7" text-anchor="middle">2 numbers &#8594; take the bigger one</text>
+      </svg>
+      <figcaption>
+        The picture shrinks, the channel count grows &mdash; the same conv shape
+        Mnih et&nbsp;al. used for Atari.
+      </figcaption>
+    </figure>
+    <p>
+      No BatchNorm, no dropout. With a target network, anything that makes the
+      forward pass depend on the rest of the batch leaves the update rule with no
+      fixed point to converge to.
+    </p>
+
+    <h2><small>Why two heads</small>Most frames don't need a decision</h2>
+    <figure>
+      <svg viewBox="0 0 256 152" role="img"
+           aria-label="Left: bird centred in a wide gap with the pipe still ahead, where either action is fine and the value head carries the information. Right: bird inside a narrow gap right at the lower lip, where the advantage head decides.">
+        <!-- 左：缝隙宽（52 高）、鸟居中，拍不拍都不会死 -->
+        <rect class="bx" x="26" y="8" width="64" height="100" rx="3"/>
+        <rect x="74" y="8" width="16" height="24" fill="#3d5a34"/>
+        <rect x="74" y="84" width="16" height="24" fill="#3d5a34"/>
+        <circle cx="44" cy="58" r="4.5" fill="var(--you)"/>
+        <text class="t-dim" x="58" y="126" font-size="8" text-anchor="middle">wide gap, still far</text>
+        <text class="t-you" x="58" y="139" font-size="8.5" text-anchor="middle">V(s) carries it</text>
+
+        <!-- 右：缝隙窄（22 高）、鸟贴着下沿，差一帧就撞 -->
+        <rect class="bx" x="166" y="8" width="64" height="100" rx="3"/>
+        <rect x="182" y="8" width="16" height="46" fill="#3d5a34"/>
+        <rect x="182" y="76" width="16" height="32" fill="#3d5a34"/>
+        <circle cx="174" cy="71" r="4.5" fill="var(--you)"/>
+        <text class="t-dim" x="198" y="126" font-size="8" text-anchor="middle">narrow gap, at the lip</text>
+        <text class="t-ai" x="198" y="139" font-size="8.5" text-anchor="middle">A(s, a) decides</text>
+      </svg>
+      <figcaption>
+        Two heads, so the value branch gets a gradient from every frame &mdash; not
+        only from whichever action happened to be played.
+      </figcaption>
+    </figure>
+    <p>
+      Subtracting <code>mean(A)</code> isn't polish. Without it, <code>V</code> and
+      <code>A</code> aren't pinned down by <code>Q</code> at all &mdash; add a
+      constant to one, subtract it from the other, and <code>Q</code> is unchanged
+      &mdash; so the two heads quietly drift apart during training.
+    </p>
+
+    <h2><small>The browser port</small>Checked, not assumed</h2>
+    <div class="chips">
+      <span class="chip"><b>1,200</b> observation frames, pixel-identical</span>
+      <span class="chip"><b>300</b> decisions, same action as PyTorch</span>
+      <span class="chip"><b>6&#215;10<sup>&#8722;3</sup></b> max Q deviation (fp16)</span>
+    </div>
+    <p>
+      This page runs a hand-written JavaScript forward pass &mdash; no ONNX runtime,
+      no WASM blob &mdash; so the entire download is the weights themselves
+      (<code>fp16</code>, 2.52&nbsp;MB). The parity harness ships in
+      <code>web/tools/</code> and needs no Python to re-run.
+    </p>
+
+    <h2><small>Results</small>How it actually plays</h2>
+    <div class="stat-row">
+      <div class="stat ai"><b>96.9</b><span>PyTorch &middot; 400 episodes</span></div>
+      <div class="stat ai"><b>100.4</b><span>this browser build &middot; 40 episodes</span></div>
+      <div class="stat you"><b>6.8</b><span>human baseline &middot; small sample</span></div>
+    </div>
+    <figure>
+      <svg viewBox="0 0 260 80" role="img"
+           aria-label="Distribution of pipes cleared over 400 episodes: the middle half of the runs falls between 29 and 151, the median is 74, the mean 97, and the best run reached 258.">
+        <!-- 三个标注左右错开而不是上下堆叠：中位数和均值只差 19 个单位，
+             居中对齐的话两段文字必然压在一起。 -->
+        <text class="t-dim" x="79" y="25" font-size="7.5" text-anchor="end">median 74</text>
+        <text class="t-ai" x="106" y="25" font-size="7.5" text-anchor="start">mean 97</text>
+        <text class="t-dim" x="240" y="25" font-size="7.5" text-anchor="end">best 258</text>
+
+        <path class="ln" d="M148,42 H238 M238,36 V48"/>
+        <rect class="bx" x="44" y="32" width="104" height="20" rx="2"/>
+        <path d="M83,30 V54" stroke="var(--ink)" stroke-width="1.6" fill="none"/>
+        <path d="M102,30 V54" stroke="var(--ai)" stroke-width="1.4" fill="none"/>
+
+        <!-- 坐标轴单独画在下面。盒子左边不画须 —— 我们没测最小值，
+             画一条到 0 的须等于断言最小值是 0。 -->
+        <path class="ln" d="M20,60 H240 M20,60 V64 M105,60 V64 M189,60 V64"/>
+        <text class="t-dim" x="20" y="74" font-size="7.5" text-anchor="middle">0</text>
+        <text class="t-dim" x="105" y="74" font-size="7.5" text-anchor="middle">100</text>
+        <text class="t-dim" x="189" y="74" font-size="7.5" text-anchor="middle">200</text>
+        <text class="t-dim" x="248" y="74" font-size="7.5" text-anchor="end">pipes</text>
+      </svg>
+      <figcaption>
+        400 evaluation episodes. The box is the middle half of them; one run in
+        eleven never dies at all and gets cut off at the evaluation cap.
+      </figcaption>
+    </figure>
+    <p>
+      Both AI numbers are the same weights down two different code paths. Flappy Bird
+      scores are close to geometric &mdash; the spread is as wide as the average
+      &mdash; so treat any single mean as &plusmn;20% unless it comes with a sample
+      size. The human figure is a small sample: a sense of scale, not a baseline.
+    </p>
+    <div class="callout">
+      <p>
+        This same architecture, on an earlier version of the training pipeline,
+        plateaued at <strong>1.3 pipes</strong> after 100,000 episodes. The fix wasn't
+        a better algorithm or more compute &mdash; it was about a dozen structural
+        bugs in the data path: a terminal-state flag silently dropped 75% of the time,
+        a target network left in training mode, a reward scale that saturated the
+        loss. The write-ups for the failures are in the repo alongside the fixes.
+      </p>
+    </div>
+
+    <footer class="credits">
+      <span>Code, training logs, and the full write-up: <a href="https://github.com/zfwk1992/Flyppy_bird_RL_learn" target="_blank" rel="noopener">github.com/zfwk1992/Flyppy_bird_RL_learn</a></span>
+    </footer>
+  </section>
+</div>
+
+<script type="module">
+import { FlappyGame } from './game.js';
+import { loadSprites, Renderer } from './render.js';
+import { HITMASKS } from './assets/hitmasks.js';
+
+const $ = (id) => document.getElementById(id);
+
+// hitmasks 必须传：小鸟只有 72% 不透明，退化成包围盒会把擦边飞过误判成撞击。
+// 见 web/tools/parity_game.md。两边共用同一个 seed，所以管道序列相同。
+const randomSeed = () => (Date.now() ^ (Math.random() * 0x7fffffff)) >>> 0;
+let seed = randomSeed();
+
+let you = null, aiGame = null;
+let youState = 'loading';       // loading | idle | playing | dead
+let flapQueued = false;
+let youAlive = true, aiAlive = true;
+const best = { you: 0, ai: 0 };
+// rounds = 打完的局数；aiOutlasted = 其中"你先撞、AI 还在飞"的局数。
+const count = { rounds: 0, aiOutlasted: 0 };
+
+/* ------------------------------------------------------------------
+   AI 的动作计划：主线程**一次推理都不做**
+
+   推理原来是同步跑在这个 rAF 回调里的。桌面 45 ms / 预算 133 ms 没问题，
+   但实测中端手机 178 ms、低端 276 ms —— 超预算，整个页面被堵住，
+   渲染掉到 9.5 / 6.3 fps，连玩家自己那只鸟都跟着卡。
+
+   现在改成：worker 按 seed 预跑出**逐帧动作**，这边只回放。
+   之所以可行，是因为 **AI 那一局与玩家的操作完全无关** —— aiGame 是独立
+   实例，管道只由 seed 决定，动作只由它自己看到的画面决定。同一个 seed +
+   同一串动作喂进同一份 game.js，轨迹**逐位一致**，不是近似。
+   所以 AI 没有被削弱（plan.md 第八节），只是换了执行的线程。
+   ------------------------------------------------------------------ */
+let plan = [];                  // 逐帧动作，worker 分块送来
+let planSeed = -1;
+let planEnded = false;          // worker 说这一局 AI 已经撞了
+let aiFrame = 0;                // 回放到第几帧
+let aiPlayer = null;            // 只有退化路径（worker 不可用）才有
+// 预取：玩家一撞，就让 worker 去算**下一局**的开头。不预取的话每开一局
+// 计划都是空的，worker 得从零算起，开局必然卡一下 —— 手机上一次决策 178 ms，
+// 那就是每局开头一个肉眼可见的顿挫。玩家看结算的那两秒正好够抢出缓冲。
+let prefetch = null;            // { seed, plan, ended }
+let ready = false;
+let lastMs = 0, stalls = 0;
+
+// 预跑多远。600 帧 = 20 秒飞行量。太小在慢机器上会频繁等待，太大是白烧 CPU
+// —— 玩家一重开，没用上的部分全扔。
+const LOOKAHEAD = 600;
+
+const sprites = await loadSprites();
+const youRender = new Renderer($('youCanvas').getContext('2d'), sprites);
+const aiRender = new Renderer($('aiCanvas').getContext('2d'), sprites);
+
+/* ---- worker 接线；起不来就退回主线程同步推理（老路径，卡但能玩） ---- */
+let worker = null;
+try {
+  worker = new Worker('./ai-worker.js', { type: 'module' });
+} catch { worker = null; }
+
+if (worker) {
+  worker.onerror = () => { worker = null; fallbackToMainThread(); };
+  worker.onmessage = (e) => {
+    const m = e.data;
+    if (m.type === 'progress') {
+      if (youState === 'loading') {
+        const pct = Math.round(100 * m.loaded / m.total);
+        const fill = $('bootFill'); if (fill) fill.style.width = pct + '%';
+        const lab = $('bootPct'); if (lab) lab.textContent = pct + '% of 2.5 MB';
+      }
+      return;
+    }
+    if (m.type === 'ready') { ready = true; setYouState('idle'); return; }
+    if (m.type === 'error') { worker = null; fallbackToMainThread(); return; }
+    if (m.type === 'plan') {
+      if (m.msN) lastMs = m.ms;
+      // 按 seed 分流：当前这一局的接到 plan，预取的那一局接到 prefetch.plan
+      if (m.seed === planSeed) {
+        for (let i = 0; i < m.actions.length; i++) plan[m.from + i] = m.actions[i];
+        if (m.ended) planEnded = true;
+      } else if (prefetch && m.seed === prefetch.seed) {
+        for (let i = 0; i < m.actions.length; i++) prefetch.plan[m.from + i] = m.actions[i];
+        if (m.ended) prefetch.ended = true;
+      }
+      return;                                   // 其余都是过期的残留消息，扔掉
+    }
+  };
+} else {
+  fallbackToMainThread();
+}
+
+/** worker 用不了（老浏览器 / 加载失败）就回到原来的同步推理路径。 */
+async function fallbackToMainThread() {
+  if (aiPlayer) return;
+  try {
+    const { createAi } = await import('./ai.js');
+    aiPlayer = await createAi();
+    ready = true;
+    beginRound(null);
+    setYouState('idle');
+  } catch (err) {
+    setYouState('idle', '<b>could not load the agent</b><span>try a reload</span>');
+  }
+}
+
+/**
+ * 开新的一局：**两边同时**用同一个新 seed 重来，帧数都归零。
+ *
+ * 每局换 seed 是必须的。AI 是确定性的（eval_epsilon=0，网络里也没有
+ * Dropout/BatchNorm），seed 不变它就会**逐帧重放同一条轨迹、死在同一根管道上**。
+ * 第一版整个会话共用一个 seed，运气不好抽到一条早死的序列，就会看着它一遍遍
+ * 死在第 12 根，像是模型坏了 —— 其实只是同一局被放了很多遍。
+ */
+function beginRound(bundle) {
+  // bundle = 玩家死后预取好的那一局（seed + 已经算出来的一段计划）；
+  // 传 null 就现开一局，worker 从头算。
+  const b = bundle || { seed: randomSeed(), plan: [], ended: false };
+  seed = b.seed;
+  you = new FlappyGame({ seed, hitmasks: HITMASKS });
+  you.reset();
+  aiGame = new FlappyGame({ seed, hitmasks: HITMASKS });
+  aiGame.reset();
+  youAlive = true; aiAlive = true;
+  flapQueued = false;
+  plan = b.plan; planSeed = seed; planEnded = b.ended; aiFrame = 0;
+  prefetch = null;
+  // 预取过的话 worker 已经在算这一局了，只要继续要；否则从头开一个
+  if (worker) worker.postMessage({ type: bundle ? 'want' : 'start', seed, want: LOOKAHEAD });
+  else if (aiPlayer) aiPlayer.reset();
+  $('youLive').textContent = '0';
+  $('aiLive').textContent = '0';
+  $('aiVeil').hidden = true;
+}
+
+const IDLE_VEIL = '<b>Tap to fly</b><span>you and the AI start together</span>';
+const LOADING_VEIL = '<b>warming up the agent</b>'
+  + '<div class="bootbar"><i id="bootFill"></i></div>'
+  + '<span id="bootPct">2.5 MB of weights</span>';
+
+function setYouState(s, summary) {
+  youState = s;
+  const veil = $('youVeil');
+  if (s === 'playing') { veil.hidden = true; return; }
+  veil.hidden = false;
+  veil.innerHTML = s === 'loading' ? LOADING_VEIL : (summary || IDLE_VEIL);
+}
+
+/**
+ * 玩家撞了 —— 这一局对**你**来说结束了，但 **AI 不停**。
+ *
+ * plan.md 第八节把"玩家死后 AI 继续飞、让差距可见"定成卖点。中间一版为了
+ * 保证左右在同一根管道上，改成了"谁先撞两边同时归零"，代价是 AI 的分数
+ * 永远等于你的 —— 屏幕上两个大数字全程相等，"它比你强"根本看不出来。
+ * 现在两者兼顾：**两边仍然同一个 seed、同一帧起跑**（对照成立），
+ * 但你掉下去之后它继续飞，你犹豫的那几秒就能看着它的计数往上爬。
+ * 下一局由你点击触发，届时两边**一起**用新 seed 重开，锁步不破。
+ */
+function endRound() {
+  count.rounds++;
+  if (you.score > best.you) best.you = you.score;
+  if (aiAlive) count.aiOutlasted++;
+  $('youBest').textContent = String(best.you);
+  $('youRounds').textContent = String(count.rounds);
+  $('aiOutlasted').textContent = `${count.aiOutlasted}/${count.rounds}`;
+
+  // 玩家已经出局，worker 可以腾出手去算下一局了。当前这一局的计划不再往前
+  // 补 —— 死的时候手上还有约 LOOKAHEAD 帧（20 秒）的余量，够 AI 在你犹豫的
+  // 这几秒里继续飞。
+  if (worker) {
+    prefetch = { seed: randomSeed(), plan: [], ended: false };
+    worker.postMessage({ type: 'start', seed: prefetch.seed, want: LOOKAHEAD });
+  }
+
+  const summary = aiAlive
+    ? `<b>You crashed at ${you.score}</b>`
+      + '<span>the AI is still flying &mdash; watch its counter, then tap</span>'
+    : `<b>You crashed at ${you.score}</b>`
+      + '<span>you outlasted it this round &mdash; tap to go again</span>';
+  setYouState('dead', summary);
+}
+
+// 一次输入同时承担三件事：开始、扇翅、重开。死后**立刻**重开、不放 Game Over
+// 动画 —— 不削弱 AI，体验靠"秒重开"维持，任何停顿都会让人失去再试一次的欲望。
+function press() {
+  if (!ready) return;                        // 权重还没好，点了也开不了
+  if (youState === 'dead') beginRound(prefetch);  // 这一次点击 = 开新的一局
+  if (youState !== 'playing') setYouState('playing');
+  flapQueued = true;
+}
+
+addEventListener('keydown', (e) => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); press(); }
+  else if (e.code === 'KeyR' && ready) { beginRound(prefetch); setYouState('playing'); flapQueued = true; }
+});
+// pointerdown 而不是 click：click 在移动端有约 300ms 延迟，游戏受不了。
+// 绑在整个 arena 上而不是只绑玩家那半边 —— 手机上单边只有约 160px 宽，太容易点空。
+$('arena').addEventListener('pointerdown', (e) => { e.preventDefault(); press(); });
+
+$('reseed').addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!ready) return;
+  beginRound(null); setYouState('idle');
+});
+
+const STEP_MS = 1000 / 30;      // 与 play.py 的实时观看帧率一致
+let acc = 0;
+let last = performance.now();
+
+/**
+ * 推进一帧。返回 false 表示这一拍没走成（AI 的计划还没算到），
+ * 调用方要把时间留着下一帧再试，**不能**让玩家单独往前走 ——
+ * 一旦两边帧数错开，左右就不在同一根管道上了，对照立刻失效。
+ */
+function stepBoth() {
+  if (aiAlive) {
+    let a;
+    if (aiPlayer) {
+      a = aiPlayer.decide(aiGame);        // 退化路径：主线程同步推理
+    } else if (aiFrame < plan.length) {
+      a = plan[aiFrame];                  // 正常路径：回放 worker 算好的动作
+    } else {
+      stalls++;
+      return false;                       // 计划没跟上，整体等一拍
+    }
+    aiFrame++;
+    if (aiGame.step(a).done) {
+      aiAlive = false;
+      $('aiVeil').hidden = false;
+      $('aiVeil').innerHTML = `<b>The AI crashed at ${aiGame.score}</b>`
+        + (youAlive ? '<span>you are still flying</span>' : '');
+    }
+    // 让 worker 始终保持大约 LOOKAHEAD 的余量。玩家已经出局的话就不再要了 ——
+    // 那时 worker 正在算下一局，别把它拽回来。
+    if (worker && !planEnded && youAlive && plan.length - aiFrame < LOOKAHEAD / 2) {
+      worker.postMessage({ type: 'want', seed: planSeed, want: aiFrame + LOOKAHEAD });
+    }
+  }
+
+  if (youAlive && youState === 'playing') {
+    const act = flapQueued ? 1 : 0;
+    flapQueued = false;
+    if (you.step(act).done) { youAlive = false; endRound(); }
+  }
+
+  $('youLive').textContent = String(you.score);
+  $('aiLive').textContent = String(aiGame.score);
+  // AI 还在飞的时候 best 要跟着涨 —— 否则看不出它飞到哪儿去了
+  if (aiGame.score > best.ai) { best.ai = aiGame.score; $('aiBest').textContent = String(best.ai); }
+  return true;
+}
+
+function tick(now) {
+  const dt = now - last;
+  last = now;
+  // 玩家在玩、或者玩家已经掉下去但 AI 还在飞 —— 两种情况都要推进
+  const running = youState === 'playing' || (youState === 'dead' && aiAlive);
+  if (running) {
+    // 切后台回来时 dt 可能是几秒，别让物理一次性追补上百帧
+    acc = Math.min(acc + dt, STEP_MS * 4);
+    while (acc >= STEP_MS) {
+      if (!stepBoth()) break;   // 没走成就把时间留着，下一帧再试
+      acc -= STEP_MS;
+    }
+  } else {
+    acc = 0;
+  }
+  youRender.draw(you.observeState());
+  aiRender.draw(aiGame.observeState());
+  if (lastMs) {
+    $('perf').textContent = aiPlayer
+      ? `inference ${lastMs.toFixed(0)} ms / decision`
+      : `inference ${lastMs.toFixed(0)} ms / decision, off the main thread`;
+  }
+  requestAnimationFrame(tick);
+}
+
+// 调试用：headless 里量缓冲跟不跟得上（stalls 应当接近 0）。不影响页面行为。
+window.__stats = () => ({ plan: plan.length, aiFrame, stalls, lastMs, ready,
+  worker: !!worker, prefetch: prefetch ? prefetch.plan.length : -1 });
+
+beginRound(null);
+setYouState('loading');
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 虚拟环境（CUDA 版 torch 近 3GB，绝不能进仓库）
+# 用 * 通配是因为 setup.ps1 的 -VenvDir 允许任意名字（.venv_test / .venv310 ...），
+# 只写 .venv/ 的话换个名字就会把两三万个 site-packages 文件抖进 git status。
+.venv*/
+venv*/
+env/
+
+# 训练产物
+runs/
+*.pth
+*.pt
+# 例外：models/ 下只放"当前基线"那一个存档，跟着代码一起版本化。
+# 4.8MB 二进制，进了 git 历史就很难移除 —— 所以这里只开这一个口子，
+# 不要把 runs/ 里的中间存档也塞进来。
+!models/*.pt
+
+# 后台训练的 stdout/stderr 重定向（runs_mlp60.log / runs_mlp80.err 这类）
+*.log
+*.err
+
+# 输出
+*.mp4
+*.png
+!images/*.png
