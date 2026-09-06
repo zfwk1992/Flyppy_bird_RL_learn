@@ -1,0 +1,34 @@
+/**
+ * Cloudflare Workers 部署配置（Static Assets，纯静态、没有 Worker 代码）。
+ *
+ * 为什么是这个文件而不是在控制台点选
+ * ----------------------------------
+ * 这个站点零后端：整个"服务端"只负责把 web/ 里的静态文件递出去，
+ * 神经网络跑在访问者自己的浏览器里（见 web/ai-worker.js）。
+ * 早先 web/DEPLOY.md 走的是 Cloudflare Pages，那条路的配置**只存在于网页
+ * 控制台**，没有可提交的等价文件——换个人、换台机器就得照着文档重点一遍。
+ * Workers Static Assets 把同样的事变成了这个 git 文件。
+ *
+ * `assets.directory` 是全部要害所在
+ * ---------------------------------
+ * **只有 ./web 会被发布出去。** 仓库根目录还有 flappy/、game/、models/*.pt、
+ * train.py 这些训练代码和权重，跟站点毫无关系且体积不小。指向 ./web 就把
+ * 发布范围钉死在站点本身——不这么做，要么把训练代码一起公开，要么
+ * Cloudflare 把仓库根的 README.md 当首页、找不到 web/index.html。
+ *
+ * 没有 `main` 字段是**故意的**：没有 Worker 脚本，纯资源投递。
+ * 这样静态请求不消耗 Workers 的请求额度，也没有冷启动。
+ *
+ * 缓存策略仍然由 web/_headers 决定（模型权重与精灵强缓存一天，
+ * index.html 不缓存以便随时改文案），那个文件在资源目录里会被自动读取。
+ *
+ * 部署分支不在这里配，在控制台的 Settings → Build → Branch，必须是 demo/web
+ * ——`main` 上没有 web/ 目录。
+ */
+{
+  "name": "flyppy-bird-rl-learn",
+  "compatibility_date": "2026-09-06",
+  "assets": {
+    "directory": "./web"
+  }
+}
