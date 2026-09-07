@@ -761,9 +761,85 @@ Cloudflare Pages 控制台的实际部署操作（agent 没有账号访问权限
 | B2 | 管道不显示：写复现脚本 | 已完成（**未能复现**） | `web/tools/pipe_render_check.mjs` + `pipe_probe.js`。A 段 8651 帧 / 33810 根次逐帧对拍，最低覆盖率 1.0000；B 段真页面 48114 根次连续性判定，0 次消失。三个负向对照实测都能红（见 2026-09-07 日志）。**没改任何渲染代码** |
 | B3 | 管道不显示：修 | 跳过（B2 未能复现） | 按 `web_plan.md` §7.1 的规定办：B2 没复现就跳过 B3。**没定位到的 bug 不许顺手改一段看起来相关的代码。** 哪天真机上复现到了，或者把 B2 日志末尾列的那几个没试过的条件（切后台 / 不同 DPR / worker 退化路径）跑出红来，再把这一行改回待办 |
 | B4 | 设备矩阵 7 视口 | 已完成 | `web/tools/viewport_check.mjs`，7 个视口全过退 0。**§3.1 原文那条 `scrollWidth <= innerWidth` 是不会红的**（Blink shrink-to-fit），已换成拿设备宽度当尺子，理由见 2026-09-07 日志。四条判据各有一条负向对照实测退 1。`mobile_check.mjs` 里那条老判据同样不会红，本轮没动。真机未验证 |
-| B5 | 误操作用例 1–4 | 待办 | |
-| B6 | 误操作用例 5–7 + TESTING.md | 待办 | |
-| B7 | 操作提示按输入方式区分 | 待办 | 依赖 B4（已完成）。断言加进 `viewport_check.mjs` 的探针即可：那里已经在读 `#youVeil` 和页脚提示的位置，补一条"粗指针视口上文案必须是 Tap、桌面视口上必须是 SPACE"。**注意 `mobile:true` 不会让 `pointer: coarse` 生效**，本轮实测：只设 `mobile:true` 时 `(pointer:coarse)`=false 且 `(pointer:fine)` 也是 false（headless 里根本没有指针）；再发一条 `Emulation.setTouchEmulationEnabled {enabled:true,maxTouchPoints:5}` 之后 coarse 才变 true、`maxTouchPoints` 才是 5。所以 B7 的分支如果写成 `matchMedia('(pointer: coarse)')`，测的时候必须补这条，否则七个视口全都走桌面分支、断言等于没写 |
-| B8 | 训练循环图 | 待办 | |
-| B9 | 页面数字核对 | 待办 | 放最后，前面可能改数字。B1b 那条已查过：页面上**没有**"gap 85"/"85–165"文案，不用改；且**不要**因为 demo 难度变了去动"400 episodes 96.9"（那是训练分布上的基线） |
-| B10 | 全量巡检 + 总结 | 待办 | |
+| B5 | 误操作用例 1–4 | 已完成 | `web/tools/e2e_check.mjs`：boot-spam / refresh / rapid-restart / background-tab，四条各有能红的负向对照。2026-09-07 本机 |
+| B6 | 误操作用例 5–7 + TESTING.md | 部分完成 | worker-fallback / weights-dead / touch-misfire 三条过；**slow-network 未能验证**（三种造慢网的办法都不成立，见 web/TESTING.md §3.1），默认跳过。`web/TESTING.md` 已写，含真机人工清单。另修掉三处用例间污染 |
+| B7 | 操作提示按输入方式区分 | 已完成 | `(pointer: coarse)` 分三处文案；`viewport_check` 判据 5，正反两方向对照都能红 |
+| B8 | 训练循环图 | 已完成 | 回放池→采样→双网络→TD 目标→梯度，两条回路（实线=每步、虚线=每 1,000 步同步）。320/390/414 截图核对 |
+| B9 | 页面数字核对 | 已完成 | 12 项全部对得上，对照表见本文件末尾的收尾汇总。页面无用户可见的 "gap 85" 文案 |
+| B10 | 全量巡检 + 总结 | 已完成 | 九项检查全部 rc=0（obs/nn/parity/worker/gap/stall/viewport/smoke/mobile）+ e2e 8 过 0 挂 |
+
+---
+
+# 加固计划收尾汇总（2026-09-07，本机）
+
+`web_plan.md` 的 B1–B10 全部走完。前四批由定时 routine 在柏林时间凌晨完成，
+B5–B10 与若干修补在本机完成，之后 routine 已停用。
+
+**这一节是给"想知道现在到底什么能信"的人看的。** 每条只有四种状态：
+已修复并验证 / 已改但未验证 / 未能复现 / 未能验证。
+
+## 一张表
+
+| 批次 | 内容 | 状态 | 凭据 |
+|---|---|---|---|
+| B1 | 玩家死后 AI 卡住 | **已修复并验证** | 预取挪到 AI 也撞死之后。`stall_check.mjs` 实测：玩家死在第 2 根，AI 继续飞到第 35 根 |
+| B1b | demo 缝隙下界 85 → 100 | **已修复并验证** | `DEMO_GAP_RANGE` 传给 you/aiGame/worker 三处，`DEFAULT_GAP_RANGE` 未动。`gap_check.mjs` 两份坏页面对照各退 1 |
+| B2 | 管道不显示：复现脚本 | **未能复现** | 8651 帧 / 33810 根次逐帧对拍，覆盖率最低 1.0000；真页面 48114 根次连续性判定 0 次消失。三个负向对照能红。**没改任何渲染代码** |
+| B3 | 管道不显示：修 | **跳过** | 按计划规定：B2 没复现就不许硬修 |
+| B4 | 设备矩阵 7 视口 | **已修复并验证** | `viewport_check.mjs` 7 过 0 挂，五条判据各有能红的对照 |
+| B5 | 误操作用例 1–4 | **已修复并验证** | `e2e_check.mjs`，四条各有能红的对照 |
+| B6 | 误操作用例 5–7 + TESTING.md | **部分完成** | 三条新用例过；`slow-network` **未能验证**（见下） |
+| B7 | 操作提示按输入方式分 | **已修复并验证** | `viewport_check` 判据 5，正反两个方向的对照都能红 |
+| B8 | 训练循环图 | **已完成** | 一张内联 SVG，320/390/414 三个视口截图核对过 |
+| B9 | 页面数字核对 | **已完成** | 见下面的对照表，全部对得上 |
+| B10 | 全量巡检 | **已完成** | 见下面的检查清单 |
+
+## B9：页面上的数字 vs 仓库现状
+
+| 页面说法 | 核对方式 | 结论 |
+|---|---|---|
+| 1,258,659 参数 | 逐层算 8224+32832+36928+1179904+257+514 | 精确相等 |
+| 回放池 60,000 | `runs/base_s0/config.json` | 对（注意 `flappy/config.py` 现在的**默认**是 150,000，base_s0 是用 `--buffer 60000` 训的；页面描述的是发布的这个模型） |
+| 目标网络每 1,000 步同步 | 同上 | 对 |
+| batch 128、每 4 次决策一步 | 同上 | 对 |
+| PyTorch 96.9 / 400 局 | `eval.py runs/base_s0/final.pt --episodes 400` | 96.91 ± 3.93 |
+| 浏览器 100.4 / 40 局 | `node web/tools/ai_eval.mjs 40` | 100.42 ± 14.17 |
+| Q 最大偏差 6×10⁻³ | `nn_check.mjs` | 6.13e-3 |
+| 1,200 帧观测 / 300 次决策 | `obs_check` / `nn_check` | 1200、300/300 |
+| 中位 74、四分位 29–151、最高 258 | 400 局评测 | 对 |
+| 十一分之一撞上限 | 36/400 = 1/11.1 | 对 |
+| fp16 2.52 MB | 2,517,318 字节 | 对（十进制 MB） |
+| 人类 6.8 | 小样本，页面已标注 | 保持 |
+
+另外查过：页面**没有**用户可见的 "gap 85 / 85–165" 文案，B1b 不需要改文案。
+唯一一处 85–165 在代码注释里（解释模型训练分布是 [100,165] 的超集）。
+
+**没有**因为 demo 难度变了去动"400 episodes 96.9" —— 那是训练分布 85–165 上的
+模型能力基线，和 demo 的难度设置是两回事。
+
+## ⚠️ 还不能信的部分
+
+1. **`slow-network` 未能验证。** 三种造慢网的办法都不成立（页面会话限速管不到
+   worker、挂 worker 会话来不及、自写滴流服务器会让 module worker 坏掉）。
+   默认跳过，`--slow` 才跑。细节见 `web/TESTING.md` §3.1 和脚本注释。
+2. **真机一次都没跑过。** 所有自动化都是 headless Chromium（Blink），
+   iOS 是 WebKit。module worker、流式读取、`image-rendering: pixelated`、
+   `(pointer: coarse)` 在 iOS 上都可能不同。人工清单见 `web/TESTING.md` §4。
+3. **"Cloudflare 上不稳定"没有复现。** 全部测试都在 localhost，
+   没有 CDN、没有 `_headers` 的缓存策略、没有真实网络抖动。
+4. **B2 的管道不显示没有定位。** 本地大规模对拍复现不出来，
+   哪天真机上碰到了请截图，并把 B3 改回待办。
+5. **`mobile_check.mjs` 里那条 `scrollWidth <= innerWidth` 不会红**
+   （Blink shrink-to-fit）。`viewport_check.mjs` 已换判据，老的没动，
+   别拿它的绿当数。
+
+## 顺手修掉的两个"假绿"
+
+不属于任何批次，但都属于"检查本身是坏的"，值得单列：
+
+- **三个脚本在 Node 24 上一跑就崩**：预检 `fetch(url)` 只看 `r.ok` 不消费响应体，
+  undici 把 socket 停在 paused，python http.server（HTTP/1.0）响应完就关连接，
+  命中 `assert(!this.paused)`。补一行 `await r.arrayBuffer()`。
+- **e2e 三处用例间污染**：`waitForDebuggerOnStart` 挂住所有 worker、
+  `addScriptToEvaluateOnNewDocument` 累加不删、`background-tab` 冻结页面后
+  rAF 不恢复。症状统一是"单跑全绿、连跑挂一片"。
