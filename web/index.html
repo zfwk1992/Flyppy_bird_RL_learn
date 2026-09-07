@@ -4,20 +4,20 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>You vs. a Deep-RL Agent &mdash; Flappy Bird</title>
-<meta name="description" content="Play against a Dueling Double-DQN trained from raw pixels only. It clears 97 pipes on average; humans clear about 7. Same seed, same physics, right in your browser." />
+<meta name="description" content="Play against a Dueling Double-DQN trained from raw pixels only. It clears 97 pipes on average and has gone past 400. Same seed, same physics, right in your browser." />
 <!-- OG/Twitter：og:image 用相对路径，指向仓库根 web/ 目录下的 assets/og-card.jpg。
      LinkedIn/Twitter/Facebook 的抓取器都会按 og:url（或页面自身 URL）解析相对路径，
      部署到 Cloudflare Pages 之后用 LinkedIn Post Inspector 走一遍确认即可，
      不需要在这里硬编码还没定下来的域名。见 web/DEPLOY.md。 -->
 <meta property="og:type" content="website" />
 <meta property="og:title" content="You vs. a Deep-RL Agent &mdash; Flappy Bird" />
-<meta property="og:description" content="Play against a Dueling Double-DQN trained from raw pixels only. It clears 97 pipes on average; humans clear about 7." />
+<meta property="og:description" content="Play against a Dueling Double-DQN trained from raw pixels only. It clears 97 pipes on average and has gone past 400." />
 <meta property="og:image" content="assets/og-card.jpg" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="You vs. a Deep-RL Agent &mdash; Flappy Bird" />
-<meta name="twitter:description" content="Trained entirely from pixels. 96.9 avg pipes for the AI vs 6.8 for humans. Try to beat it." />
+<meta name="twitter:description" content="Trained entirely from pixels. 97 pipes on average, 417 at its best. Try to beat it." />
 <meta name="twitter:image" content="assets/og-card.jpg" />
 <style>
   :root {
@@ -151,6 +151,20 @@
   #learn svg .hd-ai { fill: var(--ai); }
   #learn .t-you-i { color: var(--you); }
 
+  /* 开场白：比正文稍大一点，让人一眼知道这页在讲什么 */
+  #learn .lede { font-size: clamp(14px, 3.3vw, 16px); line-height: 1.65; color: var(--ink);
+    margin: 4px 0 8px; }
+  /* 四个部分的分隔标签。页面很长，没有这个读者会不知道自己读到哪儿了 */
+  #learn .part { font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--ai); border-top: 1px solid var(--rule);
+    padding-top: 16px; margin: 38px 0 -14px; }
+  /* 输入/输出的规格表：读者到这里想要的是确切数字，不是散文 */
+  #learn table.spec { width: 100%; border-collapse: collapse; margin: 12px 0;
+    font-size: clamp(12px, 2.9vw, 13.5px); }
+  #learn table.spec th { text-align: left; font-weight: 400; color: var(--dim);
+    white-space: nowrap; padding: 5px 10px 5px 0; vertical-align: top;
+    border-top: 1px solid var(--rule); width: 1%; }
+  #learn table.spec td { color: #c7cec0; padding: 5px 0; border-top: 1px solid var(--rule); }
   #learn .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
   #learn .chip { background: var(--panel); border: 1px solid var(--rule); border-radius: 999px;
     padding: 4px 11px; font-size: 11px; color: var(--dim); }
@@ -204,60 +218,62 @@
   </footer>
 
   <section id="learn">
-    <h2><small>Input</small>It only ever sees pixels</h2>
+    <p class="lede">
+      The bird on the right is a neural network. Nobody wrote a rule telling it
+      when to flap &mdash; it was trained by <strong>reinforcement learning</strong>,
+      which means it played the game a few tens of thousands of times and kept
+      whatever happened to work. What follows is how that works in general, then
+      what this particular network looks like, what goes into it, what comes out,
+      and how well it actually plays.
+    </p>
+
+    <p class="part">Part 1 &middot; How reinforcement learning works</p>
+
+    <h2><small>The idea</small>Nobody tells it the right answer</h2>
     <figure>
-      <svg viewBox="0 0 256 132" role="img"
-           aria-label="The 288 by 512 game screen is shrunk and thresholded into an 80 by 128 black-and-white image; four consecutive ones are stacked to form the network input.">
-        <!-- 游戏画面 -->
-        <rect class="bx" x="10" y="16" width="48" height="86" rx="3"/>
-        <rect x="26" y="16" width="10" height="28" fill="#3d5a34"/>
-        <rect x="26" y="62" width="10" height="40" fill="#3d5a34"/>
-        <rect x="44" y="16" width="10" height="44" fill="#3d5a34"/>
-        <rect x="44" y="78" width="10" height="24" fill="#3d5a34"/>
-        <circle cx="19" cy="58" r="3.5" fill="var(--you)"/>
-        <text class="t-dim" x="34" y="114" font-size="8" text-anchor="middle">288 &#215; 512</text>
+      <svg viewBox="0 0 260 108" role="img"
+           aria-label="Supervised learning compares a prediction against a label for every single input. Reinforcement learning takes a long run of actions and receives one number at the very end.">
+        <text x="66" y="13" font-size="9" text-anchor="middle">supervised</text>
+        <rect class="bx" x="24" y="22" width="38" height="20" rx="3"/>
+        <text class="t-dim" x="43" y="35" font-size="7.5" text-anchor="middle">input</text>
+        <path class="ln" d="M64,32 H74"/>
+        <path class="hd" d="M79,32 l-6,-3.5 v7 z"/>
+        <rect class="bx bx-ai" x="82" y="22" width="38" height="20" rx="3"/>
+        <text class="t-ai" x="101" y="35" font-size="7.5" text-anchor="middle">guess</text>
+        <rect class="bx bx-you" x="82" y="54" width="38" height="20" rx="3"/>
+        <text class="t-you" x="101" y="67" font-size="7.5" text-anchor="middle">answer</text>
+        <path class="ln" d="M101,44 V52 M97,47 l4,-4 l4,4 M97,49 l4,4 l4,-4"/>
+        <text class="t-dim" x="66" y="92" font-size="7.5" text-anchor="middle">every input comes with</text>
+        <text class="t-dim" x="66" y="102" font-size="7.5" text-anchor="middle">its own right answer</text>
 
-        <!-- 两行标注挤在箭头上方；间距是量出来的，缩到 34 以下会压到右边那个框 -->
-        <text class="t-dim" x="80" y="42" font-size="7.5" text-anchor="middle">shrink</text>
-        <text class="t-dim" x="80" y="52" font-size="7.5" text-anchor="middle">threshold</text>
-        <path class="ln" d="M62,60 H96"/>
-        <path class="hd" d="M101,60 l-6,-3.5 v7 z"/>
+        <path class="ln" d="M132,8 V100" stroke-dasharray="3 3"/>
 
-        <!-- 二值观测 -->
-        <rect x="104" y="28" width="40" height="64" fill="#000" stroke="var(--rule)"/>
-        <rect x="116" y="28" width="8" height="20" fill="var(--ink)"/>
-        <rect x="116" y="59" width="8" height="33" fill="var(--ink)"/>
-        <rect x="133" y="28" width="7" height="32" fill="var(--ink)"/>
-        <rect x="133" y="75" width="7" height="17" fill="var(--ink)"/>
-        <rect x="108" y="57" width="4" height="4" fill="var(--ink)"/>
-        <text class="t-dim" x="124" y="104" font-size="8" text-anchor="middle">80 &#215; 128, 1 bit</text>
-
-        <text class="t-dim" x="165" y="52" font-size="7.5" text-anchor="middle">stack 4</text>
-        <path class="ln" d="M150,60 H179"/>
-        <path class="hd" d="M184,60 l-6,-3.5 v7 z"/>
-
-        <!-- 帧栈：后三张错开画在右下，最前面那张实心 -->
-        <rect x="206" y="38" width="40" height="64" fill="#0b0f0a" stroke="var(--rule)"/>
-        <rect x="200" y="32" width="40" height="64" fill="#0b0f0a" stroke="var(--rule)"/>
-        <rect x="194" y="26" width="40" height="64" fill="#0b0f0a" stroke="var(--rule)"/>
-        <rect x="188" y="20" width="40" height="64" fill="#000" stroke="var(--ink)"/>
-        <rect x="200" y="20" width="8" height="20" fill="var(--ink)"/>
-        <rect x="200" y="51" width="8" height="33" fill="var(--ink)"/>
-        <rect x="217" y="20" width="7" height="32" fill="var(--ink)"/>
-        <rect x="217" y="67" width="7" height="17" fill="var(--ink)"/>
-        <rect x="192" y="49" width="4" height="4" fill="var(--ink)"/>
-        <text class="t-dim" x="215" y="112" font-size="8" text-anchor="middle">4 &#215; 80 &#215; 128</text>
-        <text class="t-dim" x="215" y="123" font-size="7.5" text-anchor="middle">t&#8722;3 &#8230; t</text>
+        <text x="196" y="13" font-size="9" text-anchor="middle">reinforcement</text>
+        <rect class="bx" x="146" y="22" width="12" height="18" rx="2"/>
+        <rect class="bx" x="162" y="22" width="12" height="18" rx="2"/>
+        <rect class="bx" x="178" y="22" width="12" height="18" rx="2"/>
+        <rect class="bx" x="194" y="22" width="12" height="18" rx="2"/>
+        <text class="t-dim" x="215" y="35" font-size="9" text-anchor="middle">&#8230;</text>
+        <rect class="bx" x="226" y="22" width="12" height="18" rx="2"/>
+        <path class="ln" d="M232,42 V52"/>
+        <path class="hd" d="M232,58 l-3.5,-6 h7 z"/>
+        <text class="t-you" x="232" y="72" font-size="13" font-weight="700" text-anchor="middle">&#8722;1</text>
+        <text class="t-dim" x="190" y="92" font-size="7.5" text-anchor="middle">a hundred actions,</text>
+        <text class="t-dim" x="190" y="102" font-size="7.5" text-anchor="middle">then one number at the end</text>
       </svg>
       <figcaption>
-        No coordinates, no velocity, no pipe distance &mdash; the same picture you
-        see, shrunk and flattened to one bit per pixel.
+        There is no dataset of correct flaps anywhere. The only thing the agent is
+        ever told is the score.
       </figcaption>
     </figure>
     <p>
-      One frame can't tell you which way the bird is moving, so the network reads
-      <strong>four</strong> at once. It commits to flap / don't every 4th frame and
-      holds it (<code>frame_skip=4</code>).
+      The vocabulary is small and worth having up front. A <strong>state</strong> is
+      what it can see right now. A <strong>policy</strong> is how it turns that into
+      an action. An <strong>episode</strong> is one life, from start to crash. The
+      <strong>return</strong> is everything it collected over that life. Training
+      means searching for a policy whose expected return is high &mdash; by playing,
+      not by being taught. This one played about 20,000 games and made 2.5&nbsp;million
+      decisions to get where it is.
     </p>
 
     <h2><small>Objective</small>Three numbers, and a guess about the future</h2>
@@ -297,9 +313,131 @@
     <p>
       From that, the network learns <code>Q(s,a)</code>: how much total future reward
       it expects if it takes action <code>a</code> right now. Acting is just picking
-      the bigger of the two numbers. Training is <strong>Double DQN</strong> &mdash;
-      one network chooses, a slower copy scores &mdash; which curbs, though doesn't
-      eliminate, the optimism that makes a plain DQN over-value everything.
+      the bigger of the two numbers. The rest of this page is about where those
+      two numbers come from.
+    </p>
+
+    <h2><small>Value</small>Squeezing the whole future into one number</h2>
+    <figure>
+      <svg viewBox="0 0 260 116" role="img"
+           aria-label="From one screen the network produces two numbers: a value for flapping and a value for not flapping. It takes whichever is larger.">
+        <rect class="bx" x="12" y="16" width="46" height="76" rx="3"/>
+        <rect x="44" y="16" width="14" height="26" fill="#3d5a34"/>
+        <rect x="44" y="66" width="14" height="26" fill="#3d5a34"/>
+        <circle cx="26" cy="52" r="4" fill="var(--you)"/>
+        <text class="t-dim" x="35" y="104" font-size="7.5" text-anchor="middle">what it sees now</text>
+
+        <path class="ln" d="M62,54 H84"/>
+        <path class="hd" d="M89,54 l-6,-3.5 v7 z"/>
+
+        <rect class="bx" x="94" y="24" width="76" height="26" rx="4"/>
+        <text class="t-dim" x="112" y="41" font-size="8" text-anchor="middle">flap</text>
+        <text x="152" y="41" font-size="11" font-weight="700" text-anchor="middle">8.2</text>
+
+        <rect class="bx bx-ink" x="94" y="60" width="76" height="26" rx="4"/>
+        <text class="t-dim" x="112" y="77" font-size="8" text-anchor="middle">don't</text>
+        <text x="152" y="77" font-size="11" font-weight="700" text-anchor="middle">9.1</text>
+
+        <path class="ln" d="M174,73 H196"/>
+        <path class="hd" d="M201,73 l-6,-3.5 v7 z"/>
+        <text x="228" y="70" font-size="8.5" text-anchor="middle">take the</text>
+        <text x="228" y="81" font-size="8.5" text-anchor="middle">bigger one</text>
+        <text class="t-dim" x="132" y="104" font-size="7.5" text-anchor="middle">two guesses about the rest of the game</text>
+      </svg>
+      <figcaption>
+        A value is not a score. It is a prediction: &ldquo;if I do this now, how many
+        points do I end up with in total?&rdquo;
+      </figcaption>
+    </figure>
+    <p>
+      This number has a name &mdash; <code>Q(s,a)</code>, the value of taking action
+      <code>a</code> in state <code>s</code>. It is the whole rest of the game added
+      up and compressed into a single figure &mdash; with a <strong>discount</strong>
+      <code>&gamma;</code> along the way, so that a reward arriving <code>k</code>
+      steps from now counts as <code>&gamma;<sup>k</sup></code> today. And it is the reason
+      the agent needs no plan and no search: if the two numbers are right, then
+      always taking the larger one <em>is</em> optimal play. Finding good values and
+      finding a good policy turn out to be the same problem.
+    </p>
+
+    <h2><small>The trick</small>Learning without waiting for the ending</h2>
+    <figure>
+      <svg viewBox="0 0 260 122" role="img"
+           aria-label="The value of this step is corrected towards the reward just received plus the discounted value of the next step. The estimate is pulled towards a target built from another estimate one step further along.">
+        <rect class="bx bx-ai" x="16" y="18" width="76" height="30" rx="4"/>
+        <text class="t-ai" x="54" y="32" font-size="9" text-anchor="middle">Q(now)</text>
+        <text class="t-dim" x="54" y="43" font-size="7" text-anchor="middle">today's guess</text>
+
+        <path class="ln" d="M92,33 H130"/>
+        <path class="hd" d="M135,33 l-6,-3.5 v7 z"/>
+        <text class="t-dim" x="112" y="26" font-size="7" text-anchor="middle">one step</text>
+
+        <rect class="bx" x="140" y="18" width="104" height="30" rx="4"/>
+        <text x="192" y="32" font-size="8.5" text-anchor="middle">r + &#947; &#183; Q(next)</text>
+        <text class="t-dim" x="192" y="43" font-size="7" text-anchor="middle">reward + tomorrow's guess</text>
+
+        <path class="ln ln-ai" d="M192,50 V70 H54 V60" stroke-dasharray="3 3"/>
+        <path class="hd hd-ai" d="M54,54 l-3.5,6 h7 z"/>
+        <text class="t-ai" x="124" y="82" font-size="7.5" text-anchor="middle">pull the guess towards this</text>
+
+        <path class="ln" d="M20,96 H240"/>
+        <text class="t-dim" x="130" y="112" font-size="7.5" text-anchor="middle">every single step teaches something &#8212; no need to reach the end</text>
+      </svg>
+      <figcaption>
+        The estimate for this moment is corrected using the estimate for the next
+        moment. Guesses correcting guesses &mdash; and it converges.
+      </figcaption>
+    </figure>
+    <p>
+      This is the idea the whole field rests on. Waiting until the bird dies to find
+      out whether a flap was good would waste almost every frame. Instead, one step
+      is enough: the reward actually collected, plus what the agent already believes
+      about where it landed. Early on those beliefs are nonsense, so the corrections
+      are nonsense too &mdash; but the real rewards, <code>+1</code> and
+      <code>&minus;1</code>, are not guesses. They leak backwards one step at a time,
+      and slowly drag the whole estimate towards the truth.
+    </p>
+
+    <h2><small>Why a network</small>The table would not fit in the universe</h2>
+    <figure>
+      <svg viewBox="0 0 260 128" role="img"
+           aria-label="A lookup table would need one row for every possible picture. An 80 by 128 black-and-white screen has 2 to the power 10240 possible pictures, about 10 to the power 3082, while the observable universe holds around 10 to the power 80 atoms. A network instead generalises across similar pictures.">
+        <text class="t-dim" x="62" y="14" font-size="8" text-anchor="middle">a lookup table</text>
+        <rect class="bx" x="16" y="22" width="92" height="14" rx="2"/>
+        <text class="t-dim" x="62" y="32" font-size="7" text-anchor="middle">picture 1 &#8594; 8.2 / 9.1</text>
+        <rect class="bx" x="16" y="40" width="92" height="14" rx="2"/>
+        <text class="t-dim" x="62" y="50" font-size="7" text-anchor="middle">picture 2 &#8594; 7.4 / 7.4</text>
+        <rect class="bx" x="16" y="58" width="92" height="14" rx="2"/>
+        <text class="t-dim" x="62" y="68" font-size="7" text-anchor="middle">picture 3 &#8594; 9.9 / 3.1</text>
+        <text class="t-dim" x="62" y="84" font-size="9" text-anchor="middle">&#8942;</text>
+        <text class="t-you" x="62" y="100" font-size="8" text-anchor="middle">10<tspan font-size="6" dy="-3">3082</tspan><tspan dy="3"> rows</tspan></text>
+        <text class="t-dim" x="62" y="114" font-size="7" text-anchor="middle">the universe holds 10<tspan font-size="5.5" dy="-2.5">80</tspan><tspan dy="2.5"> atoms</tspan></text>
+
+        <path class="ln" d="M126,16 V112" stroke-dasharray="3 3"/>
+
+        <text class="t-dim" x="194" y="14" font-size="8" text-anchor="middle">a network</text>
+        <rect class="bx bx-ai" x="150" y="30" width="88" height="34" rx="4"/>
+        <text class="t-ai" x="194" y="44" font-size="8" text-anchor="middle">1,258,659</text>
+        <text class="t-dim" x="194" y="55" font-size="7" text-anchor="middle">numbers, total</text>
+        <path class="ln" d="M194,64 V78"/>
+        <path class="hd" d="M194,84 l-3.5,-6 h7 z"/>
+        <text class="t-dim" x="194" y="98" font-size="7.5" text-anchor="middle">a picture it has never seen</text>
+        <text class="t-dim" x="194" y="109" font-size="7.5" text-anchor="middle">still gets a sensible answer</text>
+      </svg>
+      <figcaption>
+        The screen is 80&times;128 black-and-white pixels &mdash; 2<sup>10240</sup>
+        possible pictures. No list could ever hold them.
+      </figcaption>
+    </figure>
+    <p>
+      Classical reinforcement learning kept values in a table, one row per situation.
+      That works for a board with a few thousand positions and collapses here. The
+      network replaces the table with something far smaller that has to
+      <strong>generalise</strong>: pictures that look alike get similar values,
+      so a situation encountered for the first time still produces a sensible answer.
+      That is the entire meaning of the word <em>deep</em> in deep reinforcement
+      learning &mdash; the learning part is older than the network, and the network is
+      only there because the table cannot exist.
     </p>
 
     <h2><small>How it learns</small>The training loop</h2>
@@ -363,9 +501,20 @@
     <p>
       The <span class="t-you-i">target net</span> is just a copy of the online one,
       frozen for a thousand steps at a time. Without it, the network would be chasing
-      a target it moves itself every step &mdash; the Bellman update would have no
-      fixed point to converge to, which is the same reason BatchNorm is banned here.
+      a target it moves itself every step, and chasing a moving target is how
+      learning diverges instead of settling.
     </p>
+    <p>
+      One piece is missing from that diagram: at the start the agent isn't choosing
+      at all. <code>&epsilon;</code> begins at 1.0 &mdash; <em>every</em> action a coin
+      flip &mdash; and only decays to 0.01 over the first half-million decisions.
+      Without it the agent would never stumble onto the flap that clears a high
+      gap &mdash; you cannot learn that something is a good idea if you never try it.
+      Once trained, the randomness is switched off and it simply takes the better
+      number every time.
+    </p>
+
+    <p class="part">Part 2 &middot; This particular network</p>
 
     <h2><small>Architecture</small>1,258,659 parameters</h2>
     <figure>
@@ -443,78 +592,150 @@
       </figcaption>
     </figure>
     <p>
-      No BatchNorm, no dropout. With a target network, anything that makes the
-      forward pass depend on the rest of the batch leaves the update rule with no
-      fixed point to converge to.
+      The convolutions look for shapes regardless of where on the screen they
+      appear &mdash; a gap edge is a gap edge whether it is high or low. That is
+      why the same handful of layers works for Flappy Bird, for Atari, and for a
+      great many things that are not games at all.
+    </p>
+    <p>
+      The split at the end is worth a word. Instead of producing the two values
+      directly, the network estimates how good the <em>situation</em> is
+      (<code>V</code>) and how much each action <em>changes</em> that
+      (<code>A</code>), then adds them back together. Most frames are situations
+      where the choice barely matters, and separating the two lets the network
+      learn about the situation from every frame rather than only from the action
+      it happened to take.
     </p>
 
-    <h2><small>Why two heads</small>Most frames don't need a decision</h2>
-    <figure>
-      <svg viewBox="0 0 256 152" role="img"
-           aria-label="Left: bird centred in a wide gap with the pipe still ahead, where either action is fine and the value head carries the information. Right: bird inside a narrow gap right at the lower lip, where the advantage head decides.">
-        <!-- 左：缝隙宽（52 高）、鸟居中，拍不拍都不会死 -->
-        <rect class="bx" x="26" y="8" width="64" height="100" rx="3"/>
-        <rect x="74" y="8" width="16" height="24" fill="#3d5a34"/>
-        <rect x="74" y="84" width="16" height="24" fill="#3d5a34"/>
-        <circle cx="44" cy="58" r="4.5" fill="var(--you)"/>
-        <text class="t-dim" x="58" y="126" font-size="8" text-anchor="middle">wide gap, still far</text>
-        <text class="t-you" x="58" y="139" font-size="8.5" text-anchor="middle">V(s) carries it</text>
+    <p class="part">Part 3 &middot; What goes in, what comes out</p>
 
-        <!-- 右：缝隙窄（22 高）、鸟贴着下沿，差一帧就撞 -->
-        <rect class="bx" x="166" y="8" width="64" height="100" rx="3"/>
-        <rect x="182" y="8" width="16" height="46" fill="#3d5a34"/>
-        <rect x="182" y="76" width="16" height="32" fill="#3d5a34"/>
-        <circle cx="174" cy="71" r="4.5" fill="var(--you)"/>
-        <text class="t-dim" x="198" y="126" font-size="8" text-anchor="middle">narrow gap, at the lip</text>
-        <text class="t-ai" x="198" y="139" font-size="8.5" text-anchor="middle">A(s, a) decides</text>
+    <h2><small>Input</small>Four black-and-white frames, nothing else</h2>
+    <figure>
+      <svg viewBox="0 0 256 132" role="img"
+           aria-label="The 288 by 512 game screen is shrunk and thresholded into an 80 by 128 black-and-white image; four consecutive ones are stacked to form the network input.">
+        <!-- 游戏画面 -->
+        <rect class="bx" x="10" y="16" width="48" height="86" rx="3"/>
+        <rect x="26" y="16" width="10" height="28" fill="#3d5a34"/>
+        <rect x="26" y="62" width="10" height="40" fill="#3d5a34"/>
+        <rect x="44" y="16" width="10" height="44" fill="#3d5a34"/>
+        <rect x="44" y="78" width="10" height="24" fill="#3d5a34"/>
+        <circle cx="19" cy="58" r="3.5" fill="var(--you)"/>
+        <text class="t-dim" x="34" y="114" font-size="8" text-anchor="middle">288 &#215; 512</text>
+
+        <!-- 两行标注挤在箭头上方；间距是量出来的，缩到 34 以下会压到右边那个框 -->
+        <text class="t-dim" x="80" y="42" font-size="7.5" text-anchor="middle">shrink</text>
+        <text class="t-dim" x="80" y="52" font-size="7.5" text-anchor="middle">threshold</text>
+        <path class="ln" d="M62,60 H96"/>
+        <path class="hd" d="M101,60 l-6,-3.5 v7 z"/>
+
+        <!-- 二值观测 -->
+        <rect x="104" y="28" width="40" height="64" fill="#000" stroke="var(--rule)"/>
+        <rect x="116" y="28" width="8" height="20" fill="var(--ink)"/>
+        <rect x="116" y="59" width="8" height="33" fill="var(--ink)"/>
+        <rect x="133" y="28" width="7" height="32" fill="var(--ink)"/>
+        <rect x="133" y="75" width="7" height="17" fill="var(--ink)"/>
+        <rect x="108" y="57" width="4" height="4" fill="var(--ink)"/>
+        <text class="t-dim" x="124" y="104" font-size="8" text-anchor="middle">80 &#215; 128, 1 bit</text>
+
+        <text class="t-dim" x="165" y="52" font-size="7.5" text-anchor="middle">stack 4</text>
+        <path class="ln" d="M150,60 H179"/>
+        <path class="hd" d="M184,60 l-6,-3.5 v7 z"/>
+
+        <!-- 帧栈：后三张错开画在右下，最前面那张实心 -->
+        <rect x="206" y="38" width="40" height="64" fill="#0b0f0a" stroke="var(--rule)"/>
+        <rect x="200" y="32" width="40" height="64" fill="#0b0f0a" stroke="var(--rule)"/>
+        <rect x="194" y="26" width="40" height="64" fill="#0b0f0a" stroke="var(--rule)"/>
+        <rect x="188" y="20" width="40" height="64" fill="#000" stroke="var(--ink)"/>
+        <rect x="200" y="20" width="8" height="20" fill="var(--ink)"/>
+        <rect x="200" y="51" width="8" height="33" fill="var(--ink)"/>
+        <rect x="217" y="20" width="7" height="32" fill="var(--ink)"/>
+        <rect x="217" y="67" width="7" height="17" fill="var(--ink)"/>
+        <rect x="192" y="49" width="4" height="4" fill="var(--ink)"/>
+        <text class="t-dim" x="215" y="112" font-size="8" text-anchor="middle">4 &#215; 80 &#215; 128</text>
+        <text class="t-dim" x="215" y="123" font-size="7.5" text-anchor="middle">t&#8722;3 &#8230; t</text>
       </svg>
       <figcaption>
-        Two heads, so the value branch gets a gradient from every frame &mdash; not
-        only from whichever action happened to be played.
+        No coordinates, no velocity, no pipe distance &mdash; the same picture you
+        see, shrunk and flattened to one bit per pixel.
       </figcaption>
     </figure>
     <p>
-      Subtracting <code>mean(A)</code> isn't polish. Without it, <code>V</code> and
-      <code>A</code> aren't pinned down by <code>Q</code> at all &mdash; add a
-      constant to one, subtract it from the other, and <code>Q</code> is unchanged
-      &mdash; so the two heads quietly drift apart during training.
+      A single frame is a still picture: it cannot tell you whether the bird is
+      rising or falling. So the network is handed <strong>four</strong> consecutive
+      frames at once, and reads the motion out of the differences between them.
     </p>
+    <table class="spec">
+      <tr><th>shape</th><td>4 &times; 80 &times; 128 &mdash; four stacked frames</td></tr>
+      <tr><th>values</th><td>one bit per pixel: object or background</td></tr>
+      <tr><th>source</th><td>the same picture you see, shrunk 3.6&times; wide and 4&times; tall</td></tr>
+      <tr><th>not included</th><td>coordinates, velocity, gap size, distance to the pipe</td></tr>
+    </table>
 
-    <h2><small>The browser port</small>Checked, not assumed</h2>
-    <div class="chips">
-      <span class="chip"><b>1,200</b> observation frames, pixel-identical</span>
-      <span class="chip"><b>300</b> decisions, same action as PyTorch</span>
-      <span class="chip"><b>6&#215;10<sup>&#8722;3</sup></b> max Q deviation (fp16)</span>
-    </div>
+    <h2><small>Output</small>Two numbers, thirty times a second</h2>
+    <figure>
+      <svg viewBox="0 0 260 96" role="img"
+           aria-label="The network emits two values, flap and don't. The larger one is chosen and that action is held for four frames before the next decision.">
+        <rect class="bx bx-ai" x="10" y="18" width="72" height="40" rx="4"/>
+        <text class="t-ai" x="46" y="34" font-size="8.5" text-anchor="middle">network</text>
+        <text class="t-dim" x="46" y="46" font-size="7" text-anchor="middle">one forward pass</text>
+
+        <path class="ln" d="M84,38 H96"/>
+        <path class="hd" d="M101,38 l-6,-3.5 v7 z"/>
+
+        <rect class="bx" x="106" y="18" width="54" height="18" rx="3"/>
+        <text class="t-dim" x="122" y="31" font-size="7.5" text-anchor="middle">flap</text>
+        <text x="148" y="31" font-size="8.5" font-weight="700" text-anchor="middle">8.2</text>
+        <rect class="bx bx-ink" x="106" y="40" width="54" height="18" rx="3"/>
+        <text class="t-dim" x="122" y="53" font-size="7.5" text-anchor="middle">don't</text>
+        <text x="148" y="53" font-size="8.5" font-weight="700" text-anchor="middle">9.1</text>
+
+        <path class="ln" d="M164,49 H184"/>
+        <path class="hd" d="M189,49 l-6,-3.5 v7 z"/>
+        <rect class="bx bx-ink" x="194" y="38" width="52" height="22" rx="4"/>
+        <text x="220" y="52" font-size="8.5" text-anchor="middle">don't</text>
+
+        <path class="ln" d="M220,62 V70"/>
+        <rect class="bx bx-ink" x="196" y="70" width="10" height="12" rx="2"/>
+        <rect class="bx" x="209" y="70" width="10" height="12" rx="2"/>
+        <rect class="bx" x="222" y="70" width="10" height="12" rx="2"/>
+        <rect class="bx" x="235" y="70" width="10" height="12" rx="2"/>
+        <text class="t-dim" x="188" y="80" font-size="7.5" text-anchor="end">held for 4 frames</text>
+        <text class="t-dim" x="130" y="93" font-size="7.5" text-anchor="middle">7.5 decisions a second, at 30 frames a second</text>
+      </svg>
+      <figcaption>
+        No probabilities, no plan, no search &mdash; two numbers and a comparison.
+      </figcaption>
+    </figure>
+    <table class="spec">
+      <tr><th>shape</th><td>2 floats &mdash; <code>Q(flap)</code> and <code>Q(don't)</code></td></tr>
+      <tr><th>decision</th><td>take the larger; no randomness once trained</td></tr>
+      <tr><th>rate</th><td>one decision every 4 frames &mdash; 7.5 per second at 30&nbsp;fps</td></tr>
+      <tr><th>cost</th><td>about 12.3 million multiply-adds per decision</td></tr>
+    </table>
     <p>
-      This page runs a hand-written JavaScript forward pass &mdash; no ONNX runtime,
-      no WASM blob &mdash; so the entire download is the weights themselves
-      (<code>fp16</code>, 2.52&nbsp;MB). The parity harness ships in
-      <code>web/tools/</code> and needs no Python to re-run.
+      Everything the agent does comes out of this one comparison. It runs entirely in
+      your browser &mdash; the weights are downloaded once and the network is
+      evaluated on your own device, which is why it keeps playing at the same
+      strength no matter how many people open the page.
     </p>
+    <p class="part">Part 4 &middot; Results</p>
 
     <h2><small>Results</small>How it actually plays</h2>
     <div class="stat-row">
-      <div class="stat ai"><b>96.9</b><span>PyTorch &middot; 400 episodes</span></div>
-      <div class="stat ai"><b>100.4</b><span>this browser build &middot; 40 episodes</span></div>
-      <div class="stat you"><b>6.8</b><span>human baseline &middot; small sample</span></div>
+      <div class="stat ai"><b>97</b><span>pipes on average</span></div>
+      <div class="stat ai"><b>417</b><span>best run so far</span></div>
     </div>
     <figure>
       <svg viewBox="0 0 260 80" role="img"
-           aria-label="Distribution of pipes cleared over 400 episodes: the middle half of the runs falls between 29 and 151, the median is 74, the mean 97, and the best run reached 258.">
-        <!-- 三个标注左右错开而不是上下堆叠：中位数和均值只差 19 个单位，
-             居中对齐的话两段文字必然压在一起。 -->
-        <text class="t-dim" x="79" y="25" font-size="7.5" text-anchor="end">median 74</text>
-        <text class="t-ai" x="106" y="25" font-size="7.5" text-anchor="start">mean 97</text>
-        <text class="t-dim" x="240" y="25" font-size="7.5" text-anchor="end">best 258</text>
+           aria-label="Distribution over 400 games: the middle half of the runs falls between 29 and 151 pipes, the median is 74 and the average 97.">
+        <text class="t-dim" x="79" y="25" font-size="7.5" text-anchor="end">half get past 74</text>
+        <text class="t-ai" x="106" y="25" font-size="7.5" text-anchor="start">average 97</text>
 
         <path class="ln" d="M148,42 H238 M238,36 V48"/>
         <rect class="bx" x="44" y="32" width="104" height="20" rx="2"/>
         <path d="M83,30 V54" stroke="var(--ink)" stroke-width="1.6" fill="none"/>
         <path d="M102,30 V54" stroke="var(--ai)" stroke-width="1.4" fill="none"/>
 
-        <!-- 坐标轴单独画在下面。盒子左边不画须 —— 我们没测最小值，
-             画一条到 0 的须等于断言最小值是 0。 -->
         <path class="ln" d="M20,60 H240 M20,60 V64 M105,60 V64 M189,60 V64"/>
         <text class="t-dim" x="20" y="74" font-size="7.5" text-anchor="middle">0</text>
         <text class="t-dim" x="105" y="74" font-size="7.5" text-anchor="middle">100</text>
@@ -522,26 +743,17 @@
         <text class="t-dim" x="248" y="74" font-size="7.5" text-anchor="end">pipes</text>
       </svg>
       <figcaption>
-        400 evaluation episodes. The box is the middle half of them; one run in
-        eleven never dies at all and gets cut off at the evaluation cap.
+        400 games. The box holds the middle half of them &mdash; anywhere from 29 to
+        151 pipes. One game in eleven simply never ends.
       </figcaption>
     </figure>
     <p>
-      Both AI numbers are the same weights down two different code paths. Flappy Bird
-      scores are close to geometric &mdash; the spread is as wide as the average
-      &mdash; so treat any single mean as &plusmn;20% unless it comes with a sample
-      size. The human figure is a small sample: a sense of scale, not a baseline.
+      The spread is the interesting part. Every pipe is roughly an independent coin
+      flip at about one chance in a hundred of dying, which makes short runs and
+      enormous runs both perfectly normal: a quarter of the games end before pipe 29,
+      and a quarter go past 151. So a single round tells you very little about how
+      good it is &mdash; if you want a fair impression, watch it for a while.
     </p>
-    <div class="callout">
-      <p>
-        This same architecture, on an earlier version of the training pipeline,
-        plateaued at <strong>1.3 pipes</strong> after 100,000 episodes. The fix wasn't
-        a better algorithm or more compute &mdash; it was about a dozen structural
-        bugs in the data path: a terminal-state flag silently dropped 75% of the time,
-        a target network left in training mode, a reward scale that saturated the
-        loss. The write-ups for the failures are in the repo alongside the fixes.
-      </p>
-    </div>
 
     <footer class="credits">
       <span>Code, training logs, and the full write-up: <a href="https://github.com/zfwk1992/Flyppy_bird_RL_learn" target="_blank" rel="noopener">github.com/zfwk1992/Flyppy_bird_RL_learn</a></span>
