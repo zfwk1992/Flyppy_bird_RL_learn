@@ -1,0 +1,28 @@
+# 不要发布出去的文件（Cloudflare Workers Static Assets 官方机制，.gitignore 语法）。
+#
+# 为什么需要这个文件
+# ------------------
+# `wrangler.jsonc` 里 `assets.directory` 指向 `./web`，于是 web/ 下**每一个**文件
+# 都会被当成公开资源发布 —— 包括开发文档。实测过：
+#   https://<站点>/PROGRESS.md   HTTP 200，62 KB 的完整开发日志
+#   https://<站点>/DEPLOY.md     HTTP 200，部署配置和踩过的坑
+#   https://<站点>/TESTING.md    HTTP 200，哪些测了、哪些**没测**、哪些没能复现
+#   https://<站点>/LINKEDIN_POST.md  HTTP 200，发帖草稿
+# 这些都不是站点内容，只是碰巧和站点住在同一个目录里。项目是私人的，
+# 把"哪些地方还没验证"公开挂着尤其不合适。
+#
+# 注意：`_headers` **不能**加进来 —— 那是 Cloudflare 自己要读的配置，
+# 排除掉的话缓存策略就失效了。
+
+# 开发文档
+*.md
+
+# 开发与验证工具：本机跑的，站点运行时一个都用不到
+tools/
+
+# ONNX 权重：站点用的是 model/*.bin，这个只是导出流程的中间产物
+model/*.onnx
+
+# 本地临时文件（中文版页面、录制页），本来也不该被提交
+_*.html
+index.zh.html
