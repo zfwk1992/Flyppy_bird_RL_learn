@@ -28,3 +28,12 @@ runs/
 *.mp4
 *.png
 !images/*.png
+
+# 宣传素材：GIF/视频体积大、可随时用 web/tools 重新录，不进版本库。
+# （*.mp4 上面已有规则，这里补 gif 和整个 videos/ 目录）
+*.gif
+videos/
+
+# 导出给 JS 侧的 fp16 权重：由 web/tools/export_weights.py 从 runs/*.pt 再生成。
+# demo 真正在用的那一份（weights_base_s0_fp16.bin）是例外，必须提交。
+web/model/weights_s0_*_fp16.bin

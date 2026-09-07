@@ -36,8 +36,11 @@ import { PIPE_WIDTH, PIPE_HEIGHT, PLAYER_HEIGHT, OBS_W, OBS_H } from '../game.js
 import { HITMASKS } from '../assets/hitmasks.js';
 import { renderRed, downsample, FrameStack } from '../obs.js';
 import { DuelingDQN, parseWeights } from '../nn.js';
-import { WEIGHTS_META as META_NEW } from '../model/weights-meta-base_s0.js';
-import { WEIGHTS_META as META_OLD } from '../model/weights-meta.js';
+// **同一次训练**里相隔 1055 局的两个 checkpoint（ep 19730 -> 20785）。
+// 之前这里指向的是网页 demo 的旧模型，那是完全独立的另一次训练 ——
+// 跨训练的动作差异不是 churn，只能当弱佐证（见 LAYER0-RESULTS.md 实验 D）。
+import { WEIGHTS_META as META_OLD } from '../model/weights-meta-s0_a.js';
+import { WEIGHTS_META as META_NEW } from '../model/weights-meta-s0_b.js';
 import {
   makeSeededGame, cloneGame, chaseGap, survivesLookahead,
 } from './lookahead_lib.mjs';
@@ -144,11 +147,11 @@ console.log(median(crit.map((r) => r.gapNew)) < median(indiff.map((r) => r.gapNe
   ? '-> 关键状态的动作差距更小，方向上支持"关键状态更容易被扰动翻转"。'
   : '-> 关键状态的动作差距并不更小，没有支持这个方向（也可能是代理指标本身不敏感）。');
 
-console.log('\n=========== (b) 跨模型翻转率（仅供参考，不是同次训练内的 churn） ===========');
+console.log('\n=========== (b) 同次训练内的翻转率（ep 19730 -> 20785，真 churn） ===========');
 const flipCrit = crit.filter((r) => r.flip).length / (crit.length || 1);
 const flipIndiff = indiff.filter((r) => r.flip).length / (indiff.length || 1);
 console.log(`关键状态翻转率   ${(flipCrit * 100).toFixed(1)}%  (n=${crit.length})`);
 console.log(`无差别状态翻转率 ${(flipIndiff * 100).toFixed(1)}%  (n=${indiff.length})`);
-console.log('注意：这两个模型来自不同的训练（架构相同，权重完全独立训练），'
-  + '差异量级远超"同次训练内 100 个梯度步"的 churn，这一段数字不能当成 churn 的度量，'
-  + '只能看"跨模型分歧是否也集中在关键状态"这一个弱信号，供交叉印证用。');
+console.log('这两个 checkpoint 来自**同一次训练**（base_s0，相隔 1055 局，'
+  + 'ep 19730 -> 20785），所以这是真正的 churn 度量，不是跨训练代理。'
+  + '间隔远大于"100 个梯度步"，因此这是 churn 的**上界** —— 真实的逐步抖动只会更小。');
