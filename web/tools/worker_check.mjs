@@ -38,7 +38,23 @@ const CANDIDATES = [
   '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser',
   '/opt/node22/lib/node_modules/playwright/.local-browsers/chromium/chrome-linux/chrome',
 ].filter(Boolean);
-const chrome = CANDIDATES.find((p) => { try { return fs.existsSync(p); } catch { return false; } });
+// 云端 routine 容器把浏览器放在 /opt/pw-browsers/chromium*/chrome-linux/chrome，
+// 目录名带版本号（chromium-1194）且随镜像变，写死路径等于找不到。
+// 这条检查是提交前必跑的四项之一，找不到浏览器就等于这一项没跑 ——
+// 所以按目录名扫一遍，不要让它退化成"手动设 CHROME_PATH 才能跑"。
+// 同样的扫描 stall_check / gap_check / viewport_check 里都有。
+function scanPwBrowsers() {
+  try {
+    const root = '/opt/pw-browsers';
+    for (const d of fs.readdirSync(root).filter((x) => x.startsWith('chromium')).sort().reverse()) {
+      const p = path.join(root, d, 'chrome-linux', 'chrome');
+      if (fs.existsSync(p)) return p;
+    }
+  } catch { /* 不是这个环境 */ }
+  return null;
+}
+const chrome = CANDIDATES.find((p) => { try { return fs.existsSync(p); } catch { return false; } })
+  || scanPwBrowsers();
 if (!chrome) { console.error('没找到 Chrome/Chromium，设 CHROME_PATH 指过去'); process.exit(2); }
 
 const PORT = 9300 + Math.floor(Math.random() * 300);

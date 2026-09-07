@@ -649,6 +649,101 @@ Cloudflare Pages 控制台的实际部署操作（agent 没有账号访问权限
   全过，`nn_check` 的 Q 最大偏差仍是 6.13e-3；`gap_check`、`stall_check`
   也各跑一遍全过（本轮没动页面代码，跑它们是确认这一点）。
   新增的 `pipe_render_check` 正向退 0、三个负向对照都退 1。
+
+- **2026-09-07 · B4 设备矩阵 7 视口 —— `web/tools/viewport_check.mjs`，7 个全过**
+
+  §3.1 那张表照抄进脚本，一行不多一行不少：320x568@2 / 390x844@3 / 414x896@2 /
+  360x800@3 / 768x1024@2 / 1024x768@2 / 1440x900@1。走 CDP 的
+  `Emulation.setDeviceMetricsOverride`，**带 `mobile: true` 和真实 dpr**。
+  实测七行全绿，`scale` 都是 1.00，没有一个视口有横向溢出：
+
+  | 视口 | 画布 CSS 尺寸 | you/ai 底边 / 设备高 | 首屏 |
+  |---|---|---|---|
+  | 320x568 | 125x222 | 328 / 568 | 两块 |
+  | 390x844 | 160x284 | 390 / 844 | 两块 |
+  | 414x896 | 172x306 | 416 / 896 | 两块 |
+  | 360x800 | 145x258 | 364 / 800 | 两块 |
+  | 768x1024 | 323x573 | 680 / 1024 | 两块 |
+  | 1024x768 | 242x430 | 537 / 768 | 两块 |
+  | 1440x900 | 284x504 | 611 / 900 | 两块 |
+
+  §3.1 备注担心的"横屏时两个画布 + 讲解区挤爆"**没有发生**：1024x768 下两块
+  画布并排、底边 537 远在 768 以内，页脚也在首屏里（截图看过）。
+
+  ### 最重要的一条：§3.1 原文那条判据是**永远不会红**的
+
+  计划里写的是 `documentElement.scrollWidth <= innerWidth`。照着写的第一版
+  七个视口全绿 —— 然后拿 `#app{width:1200px}` 做负向对照，**还是全绿**。
+  查下去是 Blink 移动端模拟的 **shrink-to-fit**：内容撑宽时它把页面整体缩小、
+  布局视口跟着涨，实测 `scrollWidth=1200, innerWidth=1200`，这条不等式恒成立。
+
+  **一条永远不会红的检查等于没有检查。** 尺子换成我们自己设给
+  `setDeviceMetricsOverride` 的那个宽度（320 / 390 / ...），那才是真机的 CSS
+  像素宽度，不会被 shrink-to-fit 改；顺带把 shrink-to-fit 本身也判为失败
+  （真机上它的表现就是"一进页面字全是小的、要双指放大"）。
+  首屏那条判据同理，改用 `vp.h` 而不是 `innerHeight`。
+
+  ⚠️ **`web/tools/mobile_check.mjs` 里那条老判据有一模一样的毛病**，
+  它现在是一条不会红的检查。本轮没动它（不是 B4 的活，而且 viewport_check
+  已经覆盖了它的三个视口）。哪轮顺手，把尺子换成设备宽度即可。
+
+  ### 四条判据各有一条负向对照，都实测退 1
+
+  对照不改 `index.html`，走脚本自带的 `--inject <css>` / `--injectjs <js>`：
+
+  | 判据 | 对照 | 实测 |
+  |---|---|---|
+  | 1 横向溢出 | `--inject '#app{max-width:none;width:1200px}'` | 6/7 视口红 |
+  | 2 首屏放得下 | `--inject 'canvas{height:900px!important}'` | 6/7 视口红 |
+  | 3 两块画布不重叠 | `--inject '#arena{display:block;position:relative;height:0} .side{position:absolute;top:0;left:0;width:48%}'` | 7/7 视口红 |
+  | 4 无 JS 报错 | `--injectjs 'setTimeout(()=>{throw new Error("negative control")},300)'` | 7/7 视口红 |
+
+  两个踩过的坑，写下来省得下一轮重踩：
+
+  - **判据 4 的对照第一版用 `setTimeout(...,1500)`，没红。** 因为
+    `__pageErrors` 是快照，脚本在 `__stats().ready` 那一刻就读完走人了，
+    1500 ms 的错还没抛。现在 ready 之后多等 800 ms 重量一次。
+    **这不等于覆盖了整个生命周期的报错** —— 开局之后才发生的错
+    （比如 AI 撞死那条分支）归 `stall_check` 那类脚本管。
+  - **把 `#arena` 改成单栏（`grid-template-columns:1fr`）是"不该红"的。**
+    AI 那块画布确实掉出首屏，但玩家那块和操作提示还在，§3.1 的判据 2
+    明确留了"或者至少操作提示可见"这条退路。别再拿它当对照然后困惑半天。
+
+  ### 还加了一条自检：触摸模拟到底生没生效
+
+  `mobile: true` **不会**让 `(pointer: coarse)` 成立 —— 实测只设它的时候
+  coarse=false、fine 也是 false（headless 里压根没有指针）、maxTouchPoints=0；
+  再发一条 `Emulation.setTouchEmulationEnabled {enabled:true,maxTouchPoints:5}`
+  才变成 coarse=true / maxTouchPoints=5。现在六个移动/平板视口都开触摸模拟、
+  桌面那行关掉，并且**把"这一行的 coarse 是不是预期值"也做成判据**。
+  这条盯的不是页面而是脚本自己：模拟悄悄失效的话七行照样全绿，
+  但量的其实是桌面 Chrome，全表作废。实测七行 coarse 都是预期值。
+  B7 要按输入方式分操作提示，直接用这套。
+
+  ### 顺手修了一个会让必跑门禁静默失效的洞
+
+  `worker_check.mjs`（提交前必跑的四项之一）的浏览器查找是写死路径的老版本，
+  **在这个容器里根本找不到浏览器**，要手动 `CHROME_PATH=... ` 才跑得起来。
+  给它补上 `/opt/pw-browsers/chromium*/chrome-linux/chrome` 的目录扫描
+  （`stall_check` / `gap_check` 里早就有这段）。补完不设 `CHROME_PATH`
+  直接跑通过。**没动它的任何判据。**
+
+  ### 没做到 / 别当成已经排除
+
+  - **真机仍未验证。** 这里是 Blink 按手机规则布局，**不是 iOS 的 WebKit**。
+    `image-rendering: pixelated` 在非整数缩放下的表现、`viewport-fit=cover`
+    在刘海屏上的安全区、Safari 的地址栏收起导致的 `100vh` 抖动，
+    这三条 CDP 全都证明不了。等 B6 建 `web/TESTING.md` 时列进人工清单。
+    **别拿这个脚本的绿灯写成"iPhone 上测过了"。**
+  - 每个视口只量**静止的首屏**（加载完、还没开局）。开局之后布局会不会变
+    （比如遮罩隐藏、分数变宽）没量。
+  - 只测了竖屏→横屏各自独立加载，**没测运行中旋转屏幕**（orientationchange）。
+  - 讲解区里那五张 SVG 只确认了不撑宽，**没逐张看窄屏下会不会挤成一坨**。
+
+  验证：四项 parity（`obs_check` / `nn_check` / `parity_check` / `worker_check`）
+  全过，`nn_check` 的 Q 最大偏差仍是 6.13e-3；`gap_check` 也跑了一遍全过。
+  本轮**没有改任何页面代码**（只新增 `viewport_check.mjs` + 改
+  `worker_check.mjs` 的浏览器查找），跑它们是确认这一点。
 ---
 
 ## 批次进度（定时 routine 用，勿手改格式）
@@ -665,10 +760,10 @@ Cloudflare Pages 控制台的实际部署操作（agent 没有账号访问权限
 | B1b | demo 缝隙下界 85 -> 100 | 已完成 | `DEMO_GAP_RANGE` 在 index.html，传给 you/aiGame/worker 三处；`DEFAULT_GAP_RANGE` 没动。守卫脚本 `web/tools/gap_check.mjs`，两份负向对照实测能红（见 2026-09-07 日志）。未跑 ai_eval，真机未验证 |
 | B2 | 管道不显示：写复现脚本 | 已完成（**未能复现**） | `web/tools/pipe_render_check.mjs` + `pipe_probe.js`。A 段 8651 帧 / 33810 根次逐帧对拍，最低覆盖率 1.0000；B 段真页面 48114 根次连续性判定，0 次消失。三个负向对照实测都能红（见 2026-09-07 日志）。**没改任何渲染代码** |
 | B3 | 管道不显示：修 | 跳过（B2 未能复现） | 按 `web_plan.md` §7.1 的规定办：B2 没复现就跳过 B3。**没定位到的 bug 不许顺手改一段看起来相关的代码。** 哪天真机上复现到了，或者把 B2 日志末尾列的那几个没试过的条件（切后台 / 不同 DPR / worker 退化路径）跑出红来，再把这一行改回待办 |
-| B4 | 设备矩阵 7 视口 | 进行中 2026-09-07T05:33Z | |
+| B4 | 设备矩阵 7 视口 | 已完成 | `web/tools/viewport_check.mjs`，7 个视口全过退 0。**§3.1 原文那条 `scrollWidth <= innerWidth` 是不会红的**（Blink shrink-to-fit），已换成拿设备宽度当尺子，理由见 2026-09-07 日志。四条判据各有一条负向对照实测退 1。`mobile_check.mjs` 里那条老判据同样不会红，本轮没动。真机未验证 |
 | B5 | 误操作用例 1–4 | 待办 | |
 | B6 | 误操作用例 5–7 + TESTING.md | 待办 | |
-| B7 | 操作提示按输入方式区分 | 待办 | 依赖 B4 |
+| B7 | 操作提示按输入方式区分 | 待办 | 依赖 B4（已完成）。断言加进 `viewport_check.mjs` 的探针即可：那里已经在读 `#youVeil` 和页脚提示的位置，补一条"粗指针视口上文案必须是 Tap、桌面视口上必须是 SPACE"。**注意 `mobile:true` 不会让 `pointer: coarse` 生效**，本轮实测：只设 `mobile:true` 时 `(pointer:coarse)`=false 且 `(pointer:fine)` 也是 false（headless 里根本没有指针）；再发一条 `Emulation.setTouchEmulationEnabled {enabled:true,maxTouchPoints:5}` 之后 coarse 才变 true、`maxTouchPoints` 才是 5。所以 B7 的分支如果写成 `matchMedia('(pointer: coarse)')`，测的时候必须补这条，否则七个视口全都走桌面分支、断言等于没写 |
 | B8 | 训练循环图 | 待办 | |
 | B9 | 页面数字核对 | 待办 | 放最后，前面可能改数字。B1b 那条已查过：页面上**没有**"gap 85"/"85–165"文案，不用改；且**不要**因为 demo 难度变了去动"400 episodes 96.9"（那是训练分布上的基线） |
 | B10 | 全量巡检 + 总结 | 待办 | |
