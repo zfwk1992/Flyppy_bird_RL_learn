@@ -149,6 +149,7 @@
      多个 SVG 之间会撞，画三角形没有这个问题。 */
   #learn svg .hd { fill: var(--dim); stroke: none; }
   #learn svg .hd-ai { fill: var(--ai); }
+  #learn .t-you-i { color: var(--you); }
 
   #learn .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
   #learn .chip { background: var(--panel); border: 1px solid var(--rule); border-radius: 999px;
@@ -170,11 +171,11 @@
        加载状态放进玩家那一侧的遮罩里。 -->
   <div id="arena">
     <section class="side you">
-      <div class="who"><span>You</span><small>tap / space</small></div>
+      <div class="who"><span>You</span><small id="youHow">tap / space</small></div>
       <div class="stage" id="youStage">
         <canvas id="youCanvas" width="288" height="512"></canvas>
         <div class="live" id="youLive">0</div>
-        <div class="veil" id="youVeil"><b>Tap to fly</b><span>space, click or tap</span></div>
+        <div class="veil" id="youVeil"></div>
       </div>
       <div class="stats">
         <div><span>best</span><b id="youBest">0</b></div>
@@ -197,7 +198,7 @@
   </div>
 
   <footer>
-    <span><kbd>space</kbd> flap &middot; <kbd>R</kbd> restart</span>
+    <span id="footHint"><kbd>space</kbd> flap &middot; <kbd>R</kbd> restart</span>
     <button id="reseed">new pipe sequence</button>
     <span id="perf"></span>
   </footer>
@@ -299,6 +300,71 @@
       the bigger of the two numbers. Training is <strong>Double DQN</strong> &mdash;
       one network chooses, a slower copy scores &mdash; which curbs, though doesn't
       eliminate, the optimism that makes a plain DQN over-value everything.
+    </p>
+
+    <h2><small>How it learns</small>The training loop</h2>
+    <figure>
+      <svg viewBox="0 0 260 314" role="img"
+           aria-label="The training loop: playing a frame stores a transition in a 60,000-entry replay buffer; a random batch of 128 is drawn; the online network picks the action and a frozen target network scores it; the TD target is r plus gamma times the target network's value; the loss updates the online network, and every 1,000 gradient steps the online weights are copied into the target network.">
+        <rect class="bx" x="34" y="8" width="192" height="30" rx="4"/>
+        <text x="130" y="21" font-size="8.5" text-anchor="middle">play one frame</text>
+        <text class="t-dim" x="130" y="32" font-size="7.5" text-anchor="middle">store (s, a, r, s&#8242;)</text>
+
+        <path class="ln" d="M130,38 V50"/>
+        <path class="hd" d="M130,56 l-3.5,-6 h7 z"/>
+
+        <rect class="bx" x="34" y="58" width="192" height="30" rx="4"/>
+        <text x="130" y="71" font-size="8.5" text-anchor="middle">replay buffer</text>
+        <text class="t-dim" x="130" y="82" font-size="7.5" text-anchor="middle">60,000 past transitions</text>
+
+        <path class="ln" d="M130,88 V112"/>
+        <path class="hd" d="M130,118 l-3.5,-6 h7 z"/>
+        <text class="t-dim" x="136" y="103" font-size="7.5" text-anchor="start">sample 128 at random</text>
+
+        <!-- 两个网络：在线网挑动作，目标网络打分。Double DQN 的全部内容就是这一步 -->
+        <rect class="bx bx-ai" x="14" y="120" width="108" height="34" rx="4"/>
+        <text class="t-ai" x="68" y="134" font-size="8.5" text-anchor="middle">online net</text>
+        <text class="t-dim" x="68" y="145" font-size="7.5" text-anchor="middle">picks the action</text>
+
+        <rect class="bx bx-you" x="138" y="120" width="108" height="34" rx="4"/>
+        <text class="t-you" x="192" y="134" font-size="8.5" text-anchor="middle">target net</text>
+        <text class="t-dim" x="192" y="145" font-size="7.5" text-anchor="middle">scores it</text>
+
+        <path class="ln" d="M68,154 V172 M192,154 V172 M68,172 H192 M130,172 V184"/>
+        <path class="hd" d="M130,190 l-3.5,-6 h7 z"/>
+
+        <rect class="bx bx-ink" x="18" y="192" width="224" height="32" rx="4"/>
+        <text x="130" y="206" font-size="8" text-anchor="middle">TD target = r + &#947; &#183; Q(s&#8242;)</text>
+        <text class="t-dim" x="130" y="217" font-size="7.5" text-anchor="middle">what the Q-value should have been</text>
+
+        <path class="ln" d="M130,224 V238"/>
+        <path class="hd" d="M130,244 l-3.5,-6 h7 z"/>
+
+        <rect class="bx" x="52" y="246" width="156" height="30" rx="4"/>
+        <text x="130" y="259" font-size="8.5" text-anchor="middle">loss &#8594; gradient step</text>
+        <text class="t-dim" x="130" y="270" font-size="7.5" text-anchor="middle">every 4 decisions</text>
+
+        <!-- 回路：梯度改的是在线网 -->
+        <path class="ln ln-ai" d="M52,261 H8 V137 H8"/>
+        <path class="hd hd-ai" d="M14,137 l-6,-3.5 v7 z"/>
+
+        <!-- 目标网络只在同步时被动更新，所以画成虚线 -->
+        <path class="ln" d="M122,290 H252 V137" stroke-dasharray="3 3"/>
+        <path class="ln" d="M130,276 V290" stroke-dasharray="3 3"/>
+        <path class="hd" d="M246,137 l6,-3.5 v7 z"/>
+        <text class="t-dim" x="130" y="302" font-size="7.5" text-anchor="middle">every 1,000 steps: online weights &#8594; target</text>
+      </svg>
+      <figcaption>
+        Nothing here is learned from the frame in front of it. The network trains on
+        a random draw from 60,000 old frames &mdash; consecutive frames are far too
+        alike to learn from in order.
+      </figcaption>
+    </figure>
+    <p>
+      The <span class="t-you-i">target net</span> is just a copy of the online one,
+      frozen for a thousand steps at a time. Without it, the network would be chasing
+      a target it moves itself every step &mdash; the Bellman update would have no
+      fixed point to converge to, which is the same reason BatchNorm is banned here.
     </p>
 
     <h2><small>Architecture</small>1,258,659 parameters</h2>
@@ -495,6 +561,29 @@ const $ = (id) => document.getElementById(id);
 const randomSeed = () => (Date.now() ^ (Math.random() * 0x7fffffff)) >>> 0;
 let seed = randomSeed();
 
+/* ------------------------------------------------------------------
+   demo 专用难度：缝隙下界抬到 100，上界不动。
+
+   为什么：85px 已经接近物理极限（鸟高 24 + 余量）。docs/EXPERIMENTS.md 里
+   gap 70–85 只占 10.5% 的管道，却贡献 53.5% 的死亡 —— 第一次点进来的人
+   多半会撞在这种缝上，然后以为游戏坏了。抬到 100 只是别把新玩家劝退。
+
+   **不要去改 game.js 的 DEFAULT_GAP_RANGE = [85, 165]。** 那是四项 parity
+   的基准：obs/nn/parity/worker 四个 check 都用默认值构造 FlappyGame，再和
+   Python 侧录好的参考文件逐位比对。改了默认值四项当场全挂，而重新生成参考
+   文件要 torch + pygame。所以覆盖只发生在 demo 这一侧。
+
+   这不算"改变 AI 的行为"：模型在 85–165 上训练，[100,165] 是它见过的分布的
+   子集，不存在分布外问题；策略、推理逻辑、frame_skip 一个字都没动。
+
+   **这个常量是唯一定义处，三处构造都从这里取**（you / aiGame / worker）。
+   worker 那份是通过 start 消息传过去的，不能在 worker 里写死 —— 写死了
+   worker_check.mjs（用默认值构造）就会挂。三处只要有一处不同，同一个 seed
+   就会长出**不同的管道序列**，左右两块画面不再是同一关；而且这种 bug 在
+   画面上极其隐蔽：两边都能正常玩，只是管道长得不一样。
+   ------------------------------------------------------------------ */
+const DEMO_GAP_RANGE = [100.0, 165.0];
+
 let you = null, aiGame = null;
 let youState = 'loading';       // loading | idle | playing | dead
 let flapQueued = false;
@@ -600,23 +689,51 @@ function beginRound(bundle) {
   // 传 null 就现开一局，worker 从头算。
   const b = bundle || { seed: randomSeed(), plan: [], ended: false };
   seed = b.seed;
-  you = new FlappyGame({ seed, hitmasks: HITMASKS });
+  you = new FlappyGame({ seed, hitmasks: HITMASKS, gapRange: DEMO_GAP_RANGE });
   you.reset();
-  aiGame = new FlappyGame({ seed, hitmasks: HITMASKS });
+  aiGame = new FlappyGame({ seed, hitmasks: HITMASKS, gapRange: DEMO_GAP_RANGE });
   aiGame.reset();
   youAlive = true; aiAlive = true;
   flapQueued = false;
   plan = b.plan; planSeed = seed; planEnded = b.ended; aiFrame = 0;
   prefetch = null;
   // 预取过的话 worker 已经在算这一局了，只要继续要；否则从头开一个
-  if (worker) worker.postMessage({ type: bundle ? 'want' : 'start', seed, want: LOOKAHEAD });
+  // gapRange 必须跟着 start 走：worker 里那一局要和这边的 you/aiGame 长出
+  // 同一串管道，否则 AI 是在另一关上做的决策。'want' 不带（那一局已经建好了）。
+  if (worker) worker.postMessage({ type: bundle ? 'want' : 'start', seed, want: LOOKAHEAD, gapRange: DEMO_GAP_RANGE });
   else if (aiPlayer) aiPlayer.reset();
   $('youLive').textContent = '0';
   $('aiLive').textContent = '0';
   $('aiVeil').hidden = true;
 }
 
-const IDLE_VEIL = '<b>Tap to fly</b><span>you and the AI start together</span>';
+// 手机上没有键盘、桌面上没法"tap" —— 一句话同时说两种设备，两边都读着别扭，
+// 而且手机用户最需要的那句"点屏幕"混在键盘说明里根本看不见。所以按指针类型分。
+//
+// 判据用 `(pointer: coarse)` 而不是 UA 或视口宽度：窄窗口的桌面浏览器仍然是鼠标，
+// 而带触摸屏的笔记本两种都有（这时 coarse 为 false，走键盘文案，因为它有键盘）。
+//
+// **注意**：headless 里 `mobile: true` 并不会让 coarse 成立，必须再发一条
+// `Emulation.setTouchEmulationEnabled`，否则测试里所有视口都走桌面分支、
+// 断言等于没写。viewport_check.mjs 已经这么做了。
+const coarse = () => window.matchMedia('(pointer: coarse)').matches;
+const ACT = () => (coarse() ? 'tap' : 'press SPACE');
+
+const IDLE_VEIL = () => (coarse()
+  ? '<b>Tap to fly</b><span>you and the AI start together</span>'
+  : '<b>Press SPACE to fly</b><span>you and the AI start together</span>');
+
+// 页面加载时把两处静态提示也按指针类型写一遍
+function applyInputHints() {
+  const how = $('youHow');
+  if (how) how.textContent = coarse() ? 'tap to fly' : 'space to fly';
+  const foot = $('footHint');
+  if (foot) {
+    foot.innerHTML = coarse()
+      ? 'tap the left panel to flap &middot; tap again to restart'
+      : '<kbd>space</kbd> flap &middot; <kbd>R</kbd> restart';
+  }
+}
 const LOADING_VEIL = '<b>warming up the agent</b>'
   + '<div class="bootbar"><i id="bootFill"></i></div>'
   + '<span id="bootPct">2.5 MB of weights</span>';
@@ -626,7 +743,7 @@ function setYouState(s, summary) {
   const veil = $('youVeil');
   if (s === 'playing') { veil.hidden = true; return; }
   veil.hidden = false;
-  veil.innerHTML = s === 'loading' ? LOADING_VEIL : (summary || IDLE_VEIL);
+  veil.innerHTML = s === 'loading' ? LOADING_VEIL : (summary || IDLE_VEIL());
 }
 
 /**
@@ -661,9 +778,9 @@ function endRound() {
 
   const summary = aiAlive
     ? `<b>You crashed at ${you.score}</b>`
-      + '<span>the AI is still flying &mdash; watch its counter, then tap</span>'
+      + `<span>the AI is still flying &mdash; watch its counter, then ${ACT()}</span>`
     : `<b>You crashed at ${you.score}</b>`
-      + '<span>you outlasted it this round &mdash; tap to go again</span>';
+      + `<span>you outlasted it this round &mdash; ${ACT()} to go again</span>`;
   setYouState('dead', summary);
 }
 
@@ -720,7 +837,7 @@ function stepBoth() {
       // 开头，让玩家点"再来一局"的时候不至于从零等起。
       if (worker && !prefetch) {
         prefetch = { seed: randomSeed(), plan: [], ended: false };
-        worker.postMessage({ type: 'start', seed: prefetch.seed, want: LOOKAHEAD });
+        worker.postMessage({ type: 'start', seed: prefetch.seed, want: LOOKAHEAD, gapRange: DEMO_GAP_RANGE });
       }
     }
     // 让 worker 始终保持大约 LOOKAHEAD 的余量。**玩家死了也要继续要** ——
@@ -772,7 +889,23 @@ function tick(now) {
 window.__stats = () => ({ plan: plan.length, aiFrame, stalls, lastMs, ready,
   worker: !!worker, prefetch: prefetch ? prefetch.plan.length : -1 });
 
+// 调试用：把两局**实际生效**的 gapRange 暴露出来，供 web/tools/gap_check.mjs
+// 和 worker 收到的那份对账。读的是实例上的 this.gapRange，不是常量本身 ——
+// 这样"常量定义对了但某一处构造忘了传"也能被抓到。不影响页面行为。
+window.__gapInfo = () => ({ seed, constant: DEMO_GAP_RANGE,
+  you: you ? you.gapRange : null, ai: aiGame ? aiGame.gapRange : null });
+
 beginRound(null);
+applyInputHints();
+// 指针类型可以在运行中变（外接鼠标 / 拔掉键盘 / 平板接底座），监听一下比
+// 只在加载时读一次更稳；不支持 addEventListener 的老浏览器直接跳过。
+try {
+  const mq = window.matchMedia('(pointer: coarse)');
+  mq.addEventListener('change', () => {
+    applyInputHints();
+    if (youState !== 'playing') setYouState(youState);   // 重画当前那条提示
+  });
+} catch { /* 老浏览器没有 MediaQueryList.addEventListener */ }
 setYouState('loading');
 requestAnimationFrame(tick);
 </script>

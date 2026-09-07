@@ -118,7 +118,11 @@ async function produce(myGen) {
 function startJob(msg) {
   gen++;
   const myGen = gen;
-  const game = new FlappyGame({ seed: msg.seed, hitmasks: HITMASKS });
+  // gapRange 由主线程通过 start 消息给（demo 页面用 [100,165]）。
+  // **不能在这里写死**：msg.gapRange 缺省时要落回 game.js 的
+  // DEFAULT_GAP_RANGE=[85,165]，否则 worker_check.mjs（用默认值构造对照局）
+  // 会因为两侧管道不同而挂。undefined 会命中构造函数里的解构默认值。
+  const game = new FlappyGame({ seed: msg.seed, hitmasks: HITMASKS, gapRange: msg.gapRange });
   game.reset();
   player.reset();
   job = { gen: myGen, seed: msg.seed, game, actions: [], want: msg.want, ended: false };
