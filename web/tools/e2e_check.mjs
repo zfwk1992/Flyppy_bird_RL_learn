@@ -27,6 +27,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
 const argv = process.argv.slice(2);
@@ -101,20 +103,36 @@ if (!target) { proc.kill(); console.error(`Chromium 没能在 ${PORT} 上起 CDP
 const ws = new WebSocket(target.webSocketDebuggerUrl);
 const pending = new Map();
 let seq = 0;
+// worker 是**独立的 CDP target**。页面这条会话上的 Network 域管不到它 ——
+// 权重就是在 worker 里下的，所以限速/拦截想作用到权重，必须挂到 worker 的会话上。
+// 这一点踩过两次坑（weights-dead 和 slow-network 第一版都白测了），
+// 所以这里留了 sessionId 通道。
+const workerSessions = [];
 ws.onmessage = (e) => {
   const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
+  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); return; }
+  if (m.method === 'Target.attachedToTarget'
+      && /worker/i.test(m.params.targetInfo.type)) {
+    workerSessions.push(m.params.sessionId);
+  }
 };
 await new Promise((r) => { ws.onopen = r; });
-const send = (method, params = {}) => new Promise((res) => {
+const send = (method, params = {}, sessionId) => new Promise((res) => {
   const id = ++seq;
   pending.set(id, (m) => res(m.result ?? m.error));
-  ws.send(JSON.stringify({ id, method, params }));
+  ws.send(JSON.stringify(sessionId ? { id, method, params, sessionId } : { id, method, params }));
 });
 
 await send('Page.enable');
 await send('Runtime.enable');
 await send('Network.enable');
+// flatten 模式下 worker 起来就自动附着，用来拿它的 sessionId。
+// **waitForDebuggerOnStart 必须是 false。** 开成 true 的话每个 worker 一创建
+// 就挂在等调试器上、权重永远下不完，后面每条用例都报"没 ready" ——
+// 单跑每条都过、一起跑挂四条，就是这么来的。只有 slow-network 用例
+// 在真要限速时才会临时打开它。
+await send('Target.setAutoAttach',
+  { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
 
 const evalIn = async (expr) => {
   const r = await send('Runtime.evaluate',
@@ -141,13 +159,31 @@ const SNAP = `(() => {
 const snap = async () => JSON.parse(await evalIn(SNAP));
 
 // 每个用例都从一次干净的加载开始
-async function load() {
-  await send('Page.addScriptToEvaluateOnNewDocument', {
+// 上一次 load 注入的那段脚本的 id。**必须删掉再加新的** ——
+// addScriptToEvaluateOnNewDocument 是累加的，不删的话
+// worker-fallback 里那句 `window.Worker=throw` 会一直留到后面每个用例，
+// 于是后面的用例测的根本不是它以为的那个页面。
+let priorScript = null;
+
+async function load(pre = '') {
+  // 每个用例开头都把生命周期状态掰回 active。background-tab 会把页面 frozen 掉，
+  // 恢复之后 requestAnimationFrame 未必真的重新跑起来 —— 下一个需要画面推进的
+  // 用例就会看到 aiFrame 一直是 0，症状像"页面坏了"，其实是上一条留下的。
+  // （实测：worker-fallback 单跑必过，跟在 background-tab 后面必挂。）
+  await send('Page.setWebLifecycleState', { state: 'active' });
+  if (priorScript) {
+    await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: priorScript });
+    priorScript = null;
+  }
+  // pre 在页面脚本之前执行，用来造"这个环境没有 X"这类前置条件。
+  const added = await send('Page.addScriptToEvaluateOnNewDocument', {
     source: 'window.__pageErrors=[];'
       + 'addEventListener("error",e=>__pageErrors.push(String(e.message)));'
       + 'addEventListener("unhandledrejection",e=>__pageErrors.push("unhandled: "+e.reason));'
+      + pre
       + (injectJs ? injectJs : ''),
   });
+  priorScript = added && added.identifier;
   await send('Page.navigate', { url });
   await sleep(400);
 }
@@ -208,6 +244,67 @@ async function throttle(kbps) {
     offline: false, latency: kbps ? 150 : 0,
     downloadThroughput: kbps ? (kbps * 1024) / 8 : -1,
     uploadThroughput: kbps ? (kbps * 1024) / 8 : -1,
+  });
+}
+
+
+/**
+ * 自带一个"按字节滴流"的静态服务器，专门给 slow-network 用例。
+ *
+ * 为什么不用 CDP 的 Network.emulateNetworkConditions：**权重是在 worker 里下的**，
+ * worker 是独立 target，页面会话上的限速管不到它。挂到 worker 会话上也不行 ——
+ * 本地 2.5 MB 两百毫秒就下完，等我们 attach 上去再限速，早下完了
+ * （实测第一次采样就已经 ready=true）。
+ * 从服务端把字节喂慢，本来是唯一不依赖 CDP 时序的做法。
+ *
+ * **但这个服务器本身把 module worker 弄坏了，所以这条用例目前是废的。**
+ * 实测：页面自己的模块图正常（index.html / game.js / render.js / assets 都请求到了），
+ * `ai-worker.js` 也服出去了，但**worker 的 import 一个都没发**（nn.js / obs.js /
+ * model/weights-meta.js 全都没有请求），worker 既不报错也不 ready，就那么挂着。
+ * 把滴流整个关掉、变成一个普通的静态服务器，症状**一模一样** —— 所以不是"喂得慢"
+ * 的问题，是这个手写服务器和 Chrome 的 module worker 之间有别的不兼容。
+ * 换回 python -m http.server 立刻正常。
+ *
+ * 也试过 CDP，两条都不行：
+ *   - 页面会话上 Network.emulateNetworkConditions：**权重是在 worker 里下的**，
+ *     worker 是独立 target，页面这条域管不到（weights-dead 也栽在这个上）。
+ *   - 挂到 worker 会话上限速：本地 2.5 MB 两百毫秒下完，等 attach 上去早结束了；
+ *     加了 Target.setAutoAttach + waitForDebuggerOnStart 也没能真的把 worker 拦住，
+ *     实测第一次采样就已经 ready=true。
+ *
+ * 所以这条现在的状态是**未能验证**，不是"通过"。要做完得先解决那个不兼容
+ * （或者换成真的能限速 worker 的办法）。
+ */
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript',
+  '.mjs': 'text/javascript', '.json': 'application/json', '.bin': 'application/octet-stream',
+  '.jpg': 'image/jpeg', '.png': 'image/png', '.svg': 'image/svg+xml' };
+
+function startDripServer(rootDir, bytesPerSec) {
+  const server = http.createServer((req, res) => {
+    const rel = decodeURIComponent(req.url.split('?')[0]).replace(/^\/+/, '') || 'index.html';
+    if (process.env.DRIP_LOG) console.log('  [drip] ' + rel);
+    const file = path.join(rootDir, rel);
+    if (!file.startsWith(rootDir) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+      res.writeHead(404); res.end('nope'); return;
+    }
+    const buf = fs.readFileSync(file);
+    res.writeHead(200, {
+      'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
+      'Content-Length': String(buf.length),
+    });
+    if (!/_fp16\.bin$/.test(file)) { res.end(buf); return; }
+    // 只有权重走滴流。Content-Length 照常给，页面的进度条才有分母。
+    const chunk = Math.max(1, Math.floor(bytesPerSec / 20));   // 每 50 ms 一小口
+    let at = 0;
+    const timer = setInterval(() => {
+      if (at >= buf.length) { clearInterval(timer); res.end(); return; }
+      res.write(buf.subarray(at, at + chunk));
+      at += chunk;
+    }, 50);
+    res.on('close', () => clearInterval(timer));
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
   });
 }
 
@@ -289,7 +386,163 @@ def('rapid-restart', '连点"下一局"/换管道序列，不能出现两局叠�
   return notes;
 });
 
-// ---------------------------------------------------------------- 用例 4
+// ---------------------------------------------------------------- 用例 5
+def('worker-fallback', 'worker 起不来时退化到主线程推理，而不是白屏', async () => {
+  const notes = [];
+  // 造法是让 `new Worker` 直接抛，正好命中 index.html 里那句
+  //     try { worker = new Worker(...) } catch { worker = null; }
+  // 这就是"老浏览器 / CSP 禁掉 worker"在页面里的真实表现。
+  //
+  // 试过 Network.setBlockedURLs('*ai-worker.js')，**没用**：模块 worker 的脚本
+  // 请求不走页面那条网络域，拦不到；而且 `new Worker` 本身是同步返回的，
+  // 脚本 404 要等 onerror 才知道，快照里 worker 仍然是"在的"。
+  //
+  // 也没有按计划原文去拦 ./model/*.bin —— 那样主线程的 createAi() 同样下不到
+  // 权重，两条路一起断，测的就不是退化路径了。那个场景单独放在 weights-dead。
+  await load('window.Worker=function(){throw new Error("worker blocked (test)")};');
+  const r = await waitReady(40000);
+  if (!r) { notes.push('worker 拦掉之后 ready 一直是 false —— 没退化成功'); return notes; }
+  if (r.worker) notes.push('worker 说自己还在，拦截没生效，这一轮没测到退化路径');
+  // 判据是"**帧在推进**"，不是"过了几根管子"。退化路径的推理是同步跑在主线程上的
+  // （约 30 ms 一次决策），机器一忙就可能几十秒都过不了一根 —— 拿分数当判据
+  // 会变成一条看机器心情的用例（实测：单跑两次都过，整套一起跑就挂）。
+  // "没白屏"的真正含义是画面在动，aiFrame 在涨就够了。
+  const a = await snap();
+  if (!a.playing) await tap();
+  // 最多等 20 秒。固定睡 4 秒是不够的：整套用例连着跑的时候机器已经很忙，
+  // 实测出现过"单跑两次都过、整套一起跑 aiFrame 0->0"。
+  // 判据没有放水 —— 帧终究必须动起来，只是给够时间。
+  let b = a;
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000) {
+    await sleep(500);
+    b = await snap();
+    if (b.aiFrame > a.aiFrame) break;
+    if (!b.playing) await tap();
+  }
+  if (b.aiFrame <= a.aiFrame) {
+    notes.push(`退化路径下画面不动：aiFrame ${a.aiFrame} -> ${b.aiFrame}（20 秒内没推进）`);
+  }
+  for (const e of b.errors) notes.push('JS 报错: ' + e);
+  return notes;
+});
+
+// ---------------------------------------------------------------- 用例 5b
+def('weights-dead', '权重下不来时要说人话，不能是一片空白', async () => {
+  const notes = [];
+  // 这里**必须同时**禁掉 worker。
+  // 只发 Network.setBlockedURLs 是没用的：权重是在 **worker 内部** fetch 的，
+  // 而 worker 是独立的 CDP target，页面这条 Network 域管不到它 ——
+  // 第一版就是这样，实测 ready=true / plan=608，页面根本没受影响，
+  // 用例却在报"没给出失败提示"，是测试自己错了。
+  // 禁掉 worker 之后走主线程的 createAi()，那条 fetch 归页面管，拦得住，
+  // 命中的正是 fallbackToMainThread() 里的 catch。
+  await send('Network.setBlockedURLs', { urls: ['*_fp16.bin'] });
+  await load('window.Worker=function(){throw new Error("worker blocked (test)")};');
+  await sleep(8000);
+  await send('Network.setBlockedURLs', { urls: [] });
+  const st = await snap();
+  if (st.ready) {
+    notes.push(`权重被拦了 ready 却是 true（plan=${st.plan}）—— 拦截没生效，这一轮没测到失败路径`);
+  }
+  const veil = await evalIn(
+    `(document.querySelector('#youVeil') || {}).textContent || ''`);
+  const hidden = await evalIn(
+    `!!(document.querySelector('#youVeil') || {}).hidden`);
+  // 判据：遮罩要在、并且要有字。白屏或者一个空遮罩都是不合格的失败方式。
+  if (hidden) notes.push('权重下不来，遮罩却被藏起来了 —— 玩家看到的是一片空白');
+  if (!/could not load|reload/i.test(veil)) {
+    notes.push(`没有给出可读的失败提示，遮罩文字是："${veil}"`);
+  }
+  return notes;
+});
+
+// ---------------------------------------------------------------- 用例 6
+// **默认不跑**，要加 --slow 才会执行。原因见下面的长注释：这条目前**测不出来**，
+// 我不想让一条其实什么都没验证的用例挂在全绿的列表里冒充覆盖率。
+def('slow-network', '慢网下进度条要动，不能卡在 0%（--slow 才跑，见注释）', async () => {
+  if (!argv.includes('--slow')) {
+    return ['（提示）跳过：这条目前没有能用的造慢网手段，见脚本里的注释'];
+  }
+  const notes = [];
+  const webRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const { server, port } = await startDripServer(webRoot, 400 * 1024 / 8);   // 约 400 kbps
+  try {
+    await load();
+    await send('Page.navigate', { url: `http://127.0.0.1:${port}/index.html` });
+    const seen = new Set();
+    let sawNonZero = false;
+    for (let i = 0; i < 60; i++) {
+      await sleep(400);
+      const st = await evalIn(`(() => {
+        const f = document.querySelector('#bootFill');
+        const p = document.querySelector('#bootPct');
+        return JSON.stringify({ w: f ? f.style.width : null, t: p ? p.textContent : null });
+      })()`);
+      const o = JSON.parse(st || '{}');
+      if (o.w) { seen.add(o.w); if (parseFloat(o.w) > 0) sawNonZero = true; }
+      if (o.t) seen.add('t:' + o.t);
+      if (seen.size >= 5 && sawNonZero) break;
+    }
+    if (!sawNonZero) notes.push('进度条宽度全程是 0 —— 慢网下首屏没有任何反馈');
+    if (seen.size < 3) {
+      notes.push(`进度只出现了 ${seen.size} 个不同的值，看不出在动：${[...seen].join(' | ')}`);
+    }
+  } finally {
+    server.close();
+  }
+  return notes;
+});
+
+// ---------------------------------------------------------------- 用例 7
+def('touch-misfire', '移动端误触不能缩放页面或选中文字', async () => {
+  const notes = [];
+  await load();
+  if (!await waitReady()) { notes.push('没 ready'); return notes; }
+  // 造一个真的触摸环境：mobile:true 不会让 (pointer: coarse) 成立，
+  // 也不会给出 maxTouchPoints，必须单独发这条（B4 那轮实测过）。
+  await send('Emulation.setDeviceMetricsOverride',
+    { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+  await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  await sleep(400);
+
+  const css = JSON.parse(await evalIn(`(() => {
+    const b = getComputedStyle(document.body);
+    const a = getComputedStyle(document.querySelector('#arena'));
+    return JSON.stringify({
+      touchAction: b.touchAction,
+      userSelect: b.userSelect || b.webkitUserSelect,
+      arenaSelect: a.userSelect || a.webkitUserSelect,
+    });
+  })()`));
+  // touch-action: manipulation 就是"认单击和滑动，但不认双击缩放"。
+  if (!/manipulation|none/.test(css.touchAction)) {
+    notes.push(`body 的 touch-action 是 "${css.touchAction}"，双击会缩放页面`);
+  }
+  if (css.userSelect !== 'none') {
+    notes.push(`body 的 user-select 是 "${css.userSelect}"，长按会选中文字`);
+  }
+
+  // 双击：两次快速点击，之后视口缩放必须还是 1
+  for (let i = 0; i < 2; i++) { await tap(); await sleep(60); }
+  await sleep(600);
+  const scale = await evalIn(
+    `(window.visualViewport && visualViewport.scale) || 1`);
+  if (Math.abs(scale - 1) > 0.01) notes.push(`双击之后页面被缩放到 ${scale}`);
+
+  await send('Emulation.clearDeviceMetricsOverride');
+  await send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  const s = await snap();
+  for (const e of s.errors) notes.push('JS 报错: ' + e);
+  return notes;
+});
+
+// ---------------------------------------------------------------- 用例 4（放最后）
+// **这条必须排在最后。** 它把页面 frozen 掉，恢复之后 requestAnimationFrame
+// 不一定真的重新跑起来（headless 里页面还处在 hidden），于是**后面**任何需要
+// 画面推进的用例都会看到 aiFrame 恒为 0，症状像"页面坏了"，其实是这条留下的。
+// 实测：worker-fallback 单跑必过、跟在这条后面必挂；在 load() 里补一句
+// Page.setWebLifecycleState('active') 也救不回来。排到最后是最省事且可靠的做法。
 def('background-tab', '切后台再切回来，不能一次性补几百帧', async () => {
   const notes = [];
   await load();
