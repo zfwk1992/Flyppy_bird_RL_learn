@@ -149,6 +149,7 @@
      多个 SVG 之间会撞，画三角形没有这个问题。 */
   #learn svg .hd { fill: var(--dim); stroke: none; }
   #learn svg .hd-ai { fill: var(--ai); }
+  #learn .t-you-i { color: var(--you); }
 
   #learn .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
   #learn .chip { background: var(--panel); border: 1px solid var(--rule); border-radius: 999px;
@@ -299,6 +300,71 @@
       the bigger of the two numbers. Training is <strong>Double DQN</strong> &mdash;
       one network chooses, a slower copy scores &mdash; which curbs, though doesn't
       eliminate, the optimism that makes a plain DQN over-value everything.
+    </p>
+
+    <h2><small>How it learns</small>The training loop</h2>
+    <figure>
+      <svg viewBox="0 0 260 314" role="img"
+           aria-label="The training loop: playing a frame stores a transition in a 60,000-entry replay buffer; a random batch of 128 is drawn; the online network picks the action and a frozen target network scores it; the TD target is r plus gamma times the target network's value; the loss updates the online network, and every 1,000 gradient steps the online weights are copied into the target network.">
+        <rect class="bx" x="34" y="8" width="192" height="30" rx="4"/>
+        <text x="130" y="21" font-size="8.5" text-anchor="middle">play one frame</text>
+        <text class="t-dim" x="130" y="32" font-size="7.5" text-anchor="middle">store (s, a, r, s&#8242;)</text>
+
+        <path class="ln" d="M130,38 V50"/>
+        <path class="hd" d="M130,56 l-3.5,-6 h7 z"/>
+
+        <rect class="bx" x="34" y="58" width="192" height="30" rx="4"/>
+        <text x="130" y="71" font-size="8.5" text-anchor="middle">replay buffer</text>
+        <text class="t-dim" x="130" y="82" font-size="7.5" text-anchor="middle">60,000 past transitions</text>
+
+        <path class="ln" d="M130,88 V112"/>
+        <path class="hd" d="M130,118 l-3.5,-6 h7 z"/>
+        <text class="t-dim" x="136" y="103" font-size="7.5" text-anchor="start">sample 128 at random</text>
+
+        <!-- 两个网络：在线网挑动作，目标网络打分。Double DQN 的全部内容就是这一步 -->
+        <rect class="bx bx-ai" x="14" y="120" width="108" height="34" rx="4"/>
+        <text class="t-ai" x="68" y="134" font-size="8.5" text-anchor="middle">online net</text>
+        <text class="t-dim" x="68" y="145" font-size="7.5" text-anchor="middle">picks the action</text>
+
+        <rect class="bx bx-you" x="138" y="120" width="108" height="34" rx="4"/>
+        <text class="t-you" x="192" y="134" font-size="8.5" text-anchor="middle">target net</text>
+        <text class="t-dim" x="192" y="145" font-size="7.5" text-anchor="middle">scores it</text>
+
+        <path class="ln" d="M68,154 V172 M192,154 V172 M68,172 H192 M130,172 V184"/>
+        <path class="hd" d="M130,190 l-3.5,-6 h7 z"/>
+
+        <rect class="bx bx-ink" x="18" y="192" width="224" height="32" rx="4"/>
+        <text x="130" y="206" font-size="8" text-anchor="middle">TD target = r + &#947; &#183; Q(s&#8242;)</text>
+        <text class="t-dim" x="130" y="217" font-size="7.5" text-anchor="middle">what the Q-value should have been</text>
+
+        <path class="ln" d="M130,224 V238"/>
+        <path class="hd" d="M130,244 l-3.5,-6 h7 z"/>
+
+        <rect class="bx" x="52" y="246" width="156" height="30" rx="4"/>
+        <text x="130" y="259" font-size="8.5" text-anchor="middle">loss &#8594; gradient step</text>
+        <text class="t-dim" x="130" y="270" font-size="7.5" text-anchor="middle">every 4 decisions</text>
+
+        <!-- 回路：梯度改的是在线网 -->
+        <path class="ln ln-ai" d="M52,261 H8 V137 H8"/>
+        <path class="hd hd-ai" d="M14,137 l-6,-3.5 v7 z"/>
+
+        <!-- 目标网络只在同步时被动更新，所以画成虚线 -->
+        <path class="ln" d="M122,290 H252 V137" stroke-dasharray="3 3"/>
+        <path class="ln" d="M130,276 V290" stroke-dasharray="3 3"/>
+        <path class="hd" d="M246,137 l6,-3.5 v7 z"/>
+        <text class="t-dim" x="130" y="302" font-size="7.5" text-anchor="middle">every 1,000 steps: online weights &#8594; target</text>
+      </svg>
+      <figcaption>
+        Nothing here is learned from the frame in front of it. The network trains on
+        a random draw from 60,000 old frames &mdash; consecutive frames are far too
+        alike to learn from in order.
+      </figcaption>
+    </figure>
+    <p>
+      The <span class="t-you-i">target net</span> is just a copy of the online one,
+      frozen for a thousand steps at a time. Without it, the network would be chasing
+      a target it moves itself every step &mdash; the Bellman update would have no
+      fixed point to converge to, which is the same reason BatchNorm is banned here.
     </p>
 
     <h2><small>Architecture</small>1,258,659 parameters</h2>
