@@ -138,6 +138,11 @@ if (!chrome) { console.error('没找到 Chrome/Chromium，设 CHROME_PATH 指过
 try {
   const r = await fetch(url);
   if (!r.ok) throw new Error('HTTP ' + r.status);
+  // **必须把 body 读掉**：只看 r.ok 而不消费响应体的话，undici 会让这条
+  // socket 停在 paused 状态；python http.server 用 HTTP/1.0、响应完就关连接，
+  // 于是命中 Node 内部的 assert(!this.paused)，整个进程带着一段看不懂的
+  // undici 栈崩掉 —— 表现为"检查挂了"，但和被测页面毫无关系。
+  await r.arrayBuffer();
 } catch (e) {
   console.error(`打不开 ${url}（${e.message}）。先起服务：`);
   console.error('    python3 -m http.server 8123 --directory web &');
