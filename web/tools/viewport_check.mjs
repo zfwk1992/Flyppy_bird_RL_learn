@@ -224,6 +224,11 @@ const PROBE = (deviceW) => `(() => {
     overflowing: over,
     you: R('#youCanvas'), ai: R('#aiCanvas'),
     veil: R('#youVeil'), hint: R('footer > span'),
+    // B7：文案本身也要看。只量位置不量内容的话，"手机上显示 Press SPACE"
+    // 这种错照样全绿 —— 提示在那儿、看得见，只是对这台设备毫无意义。
+    veilText: (document.querySelector('#youVeil') || {}).textContent || '',
+    hintText: (document.querySelector('#footHint') || {}).textContent || '',
+    howText: (document.querySelector('#youHow') || {}).textContent || '',
     coarse: matchMedia('(pointer: coarse)').matches,
     touchPoints: navigator.maxTouchPoints,
     ready: !!(s && s.ready), worker: !!(s && s.worker),
@@ -306,6 +311,21 @@ for (const vp of VIEWPORTS) {
   // 模拟悄悄失效的话，七行照样全绿，但量的是桌面 Chrome，全表作废。
   if (r.coarse !== !!vp.touch) {
     notes.push(`触摸模拟没生效：(pointer: coarse)=${r.coarse}，这一行应为 ${!!vp.touch}`);
+  }
+
+  // 判据 5（B7）：操作提示必须和这台设备的输入方式对得上。
+  // 只量位置不量内容的话，"手机上写着 Press SPACE" 照样全绿 ——
+  // 提示在那儿、也看得见，只是对这台设备毫无意义。
+  const blob = `${r.veilText} ${r.hintText} ${r.howText}`.toLowerCase();
+  const saysTap = blob.includes("tap");
+  const saysKey = blob.includes("space");
+  if (vp.touch && (!saysTap || saysKey)) {
+    notes.push(`粗指针视口的提示不对：应只说 tap，实际 veil="${r.veilText}"`
+      + ` foot="${r.hintText}" how="${r.howText}"`);
+  }
+  if (!vp.touch && (!saysKey || saysTap)) {
+    notes.push(`细指针视口的提示不对：应说 SPACE，实际 veil="${r.veilText}"`
+      + ` foot="${r.hintText}" how="${r.howText}"`);
   }
 
   const bad = notes.length > 0;

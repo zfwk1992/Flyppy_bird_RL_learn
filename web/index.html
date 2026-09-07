@@ -170,11 +170,11 @@
        加载状态放进玩家那一侧的遮罩里。 -->
   <div id="arena">
     <section class="side you">
-      <div class="who"><span>You</span><small>tap / space</small></div>
+      <div class="who"><span>You</span><small id="youHow">tap / space</small></div>
       <div class="stage" id="youStage">
         <canvas id="youCanvas" width="288" height="512"></canvas>
         <div class="live" id="youLive">0</div>
-        <div class="veil" id="youVeil"><b>Tap to fly</b><span>space, click or tap</span></div>
+        <div class="veil" id="youVeil"></div>
       </div>
       <div class="stats">
         <div><span>best</span><b id="youBest">0</b></div>
@@ -197,7 +197,7 @@
   </div>
 
   <footer>
-    <span><kbd>space</kbd> flap &middot; <kbd>R</kbd> restart</span>
+    <span id="footHint"><kbd>space</kbd> flap &middot; <kbd>R</kbd> restart</span>
     <button id="reseed">new pipe sequence</button>
     <span id="perf"></span>
   </footer>
@@ -641,7 +641,33 @@ function beginRound(bundle) {
   $('aiVeil').hidden = true;
 }
 
-const IDLE_VEIL = '<b>Tap to fly</b><span>you and the AI start together</span>';
+// 手机上没有键盘、桌面上没法"tap" —— 一句话同时说两种设备，两边都读着别扭，
+// 而且手机用户最需要的那句"点屏幕"混在键盘说明里根本看不见。所以按指针类型分。
+//
+// 判据用 `(pointer: coarse)` 而不是 UA 或视口宽度：窄窗口的桌面浏览器仍然是鼠标，
+// 而带触摸屏的笔记本两种都有（这时 coarse 为 false，走键盘文案，因为它有键盘）。
+//
+// **注意**：headless 里 `mobile: true` 并不会让 coarse 成立，必须再发一条
+// `Emulation.setTouchEmulationEnabled`，否则测试里所有视口都走桌面分支、
+// 断言等于没写。viewport_check.mjs 已经这么做了。
+const coarse = () => window.matchMedia('(pointer: coarse)').matches;
+const ACT = () => (coarse() ? 'tap' : 'press SPACE');
+
+const IDLE_VEIL = () => (coarse()
+  ? '<b>Tap to fly</b><span>you and the AI start together</span>'
+  : '<b>Press SPACE to fly</b><span>you and the AI start together</span>');
+
+// 页面加载时把两处静态提示也按指针类型写一遍
+function applyInputHints() {
+  const how = $('youHow');
+  if (how) how.textContent = coarse() ? 'tap to fly' : 'space to fly';
+  const foot = $('footHint');
+  if (foot) {
+    foot.innerHTML = coarse()
+      ? 'tap the left panel to flap &middot; tap again to restart'
+      : '<kbd>space</kbd> flap &middot; <kbd>R</kbd> restart';
+  }
+}
 const LOADING_VEIL = '<b>warming up the agent</b>'
   + '<div class="bootbar"><i id="bootFill"></i></div>'
   + '<span id="bootPct">2.5 MB of weights</span>';
@@ -651,7 +677,7 @@ function setYouState(s, summary) {
   const veil = $('youVeil');
   if (s === 'playing') { veil.hidden = true; return; }
   veil.hidden = false;
-  veil.innerHTML = s === 'loading' ? LOADING_VEIL : (summary || IDLE_VEIL);
+  veil.innerHTML = s === 'loading' ? LOADING_VEIL : (summary || IDLE_VEIL());
 }
 
 /**
@@ -686,9 +712,9 @@ function endRound() {
 
   const summary = aiAlive
     ? `<b>You crashed at ${you.score}</b>`
-      + '<span>the AI is still flying &mdash; watch its counter, then tap</span>'
+      + `<span>the AI is still flying &mdash; watch its counter, then ${ACT()}</span>`
     : `<b>You crashed at ${you.score}</b>`
-      + '<span>you outlasted it this round &mdash; tap to go again</span>';
+      + `<span>you outlasted it this round &mdash; ${ACT()} to go again</span>`;
   setYouState('dead', summary);
 }
 
@@ -804,6 +830,16 @@ window.__gapInfo = () => ({ seed, constant: DEMO_GAP_RANGE,
   you: you ? you.gapRange : null, ai: aiGame ? aiGame.gapRange : null });
 
 beginRound(null);
+applyInputHints();
+// 指针类型可以在运行中变（外接鼠标 / 拔掉键盘 / 平板接底座），监听一下比
+// 只在加载时读一次更稳；不支持 addEventListener 的老浏览器直接跳过。
+try {
+  const mq = window.matchMedia('(pointer: coarse)');
+  mq.addEventListener('change', () => {
+    applyInputHints();
+    if (youState !== 'playing') setYouState(youState);   // 重画当前那条提示
+  });
+} catch { /* 老浏览器没有 MediaQueryList.addEventListener */ }
 setYouState('loading');
 requestAnimationFrame(tick);
 </script>
