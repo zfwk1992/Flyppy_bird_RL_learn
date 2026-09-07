@@ -481,6 +481,72 @@ Cloudflare Pages 控制台的实际部署操作（agent 没有账号访问权限
   验证：四项 parity（`obs_check` / `nn_check` / `parity_check` /
   `worker_check`）本轮改动前后各跑一遍，全过；`nn_check` 的 Q 最大偏差
   仍是 6.13e-3。新增的 `stall_check` 正向退 0、负向退 1。
+
+- 2026-09-07（云端 routine，B1b）：**demo 缝隙下界 85 -> 100，已修复并验证。**
+  按 `web_plan.md` §8 做的，`game.js` 的 `DEFAULT_GAP_RANGE` **一个字没动**。
+
+  改了三处 + 一个调试钩子：
+  - `web/index.html`：新增常量 `DEMO_GAP_RANGE = [100.0, 165.0]`（唯一定义处），
+    传给 `beginRound()` 里的 `you` 和 `aiGame`；两处发 `start` 的
+    `postMessage`（`beginRound` 那处、`stepBoth` 里 AI 撞死后预取下一局那处）
+    都带上 `gapRange`。
+  - `web/ai-worker.js:startJob()`：`gapRange: msg.gapRange`。**没有写死** ——
+    缺省时 `undefined` 命中 `FlappyGame` 构造函数的解构默认值，落回
+    `DEFAULT_GAP_RANGE`，这样 `worker_check.mjs`（用默认值构造对照局）不受影响。
+  - `web/index.html`：加了 `window.__gapInfo()`，暴露两局**实例上的**
+    `this.gapRange`（不是常量）。故意读实例：常量改对了、某一处构造忘了传，
+    只有读实例才抓得到。
+
+  **新增 `web/tools/gap_check.mjs`**（五条判据，约 16 秒）。这里记两点设计上的
+  坑，别在下一轮又踩回去：
+
+  1. **锁步比对必须给三处各自实测到的值，不能都喂同一份。** 第一版写成
+     "用 `you.gapRange` 构造三局比一比"，跑出来当然全等 —— 那是恒真，
+     什么也测不到。改成 A 用 `you` 的、B 用 `aiGame` 的、C 用**截获的 start
+     消息里**那一份，比对才真的在比三处是否一致。
+  2. **光有运行时探针会漏掉预取那处 `start`。** 它只在 AI 撞死时才发，
+     headless 跑一趟未必碰得到。所以另加了一条**源码层**判据：把
+     index.html 里所有 `postMessage({...})` 抠出来，凡是带 `'start'` 的
+     都必须带 `gapRange`。对照 B 里正是这条先红的。
+
+  **负向对照（本轮实测，不是推演）**：`sed` 出两份坏页面，跑同一个脚本：
+
+  | 对照 | 改了什么 | 脚本报什么 | 退出码 |
+  |---|---|---|---|
+  | 正常 `index.html` | —— | 五条全 ok | **0** |
+  | A：`aiGame` 忘传 gapRange | 去掉一处 `gapRange: DEMO_GAP_RANGE` | `aiGame.gapRange=[85,165]` + `you-vs-aiGame 第 0 帧起管道不同` | **1** |
+  | B：`start` 忘带 gapRange | 去掉两处消息里的 gapRange | 源码层 `2/2 处没带` + `worker start#1 = null` + `you-vs-worker 第 0 帧起管道不同` | **1** |
+
+  两份对照页跑完就删了，没有提交。脚本里还内建了两条负向对照（把 gapRange
+  换成 `[85,165]`，管道序列必须不同、采样必须出现 < 100 的缝），
+  防止哪天判据自己变成恒真还一路绿。
+
+  实测数字（都带样本量）：
+  - 采样 **208 根管道**，gap ∈ **[100.47, 164.61]**，均值 134.69 —— 判据 3 达标。
+    对照：同一采样器喂 `[85,165]` 时 208 根的 gap ∈ [85.58, 164.51]。
+  - 锁步逐帧比对 **600 帧**，三局的管道 x/y/gap 全等。
+  - 采样走的是 `game._samplePipe()`（`step()` 内部生成管道用的同一个方法）。
+    直接调它是为了**不依赖小鸟活多久**就能凑够 200 根 —— 不扇翅的鸟 50 帧
+    就摔了，一局连一根管子都攒不到。它是私有方法，`game.js` 那边改了名字
+    这个脚本会当场炸，不会静默失效。
+
+  **判据 4（页面文案跟着改）实际是空的**：`grep` 过 `index.html`，页面上
+  **没有**任何"gap 85"或"85–165"的文案，讲解区那两张 SVG 写的是 52/22 的
+  示意高度，和 gapRange 无关。所以这一条没有东西要改，不是漏做。
+
+  **没做、也别当成做了的事**：
+  - **没跑 `ai_eval.mjs`。** 改成 [100,165] 之后 AI 分数会比 96.9 高一些
+    （分布更容易），但 §8 明确说**不要**拿这个数字去覆盖页面上
+    "400 episodes 96.9" —— 那是在训练分布 85–165 上测的模型能力基线。
+    既然不打算改页面数字，跑 40 局十几分钟就是纯消耗，这轮跳过了。
+    真要在页面上体现 demo 难度，是另加一行说明，不是覆盖原数字。
+  - **真机仍未验证。** headless 只能证明配置一致、管道序列一致，
+    证明不了真机上的手感。留给 B6 的人工清单。
+
+  验证：四项 parity（`obs_check` / `nn_check` / `parity_check` / `worker_check`）
+  改动前后各跑一遍，全过，`nn_check` 的 Q 最大偏差仍是 6.13e-3；
+  另外 `stall_check`（B1 的守卫，也读 index.html）、`mobile_check`、
+  `smoke_test_seed` 都跑过，全过。新增的 `gap_check` 正向退 0、两份负向对照退 1。
 ---
 
 ## 批次进度（定时 routine 用，勿手改格式）
@@ -494,7 +560,7 @@ Cloudflare Pages 控制台的实际部署操作（agent 没有账号访问权限
 | 批次 | 内容 | 状态 | 备注 |
 |---|---|---|---|
 | B1 | 玩家死后 AI 卡住 | 已完成 | 修复在 a0ad404；回归脚本 `web/tools/stall_check.mjs` 本轮补上，负向对照实测能红（见 2026-09-07 日志）。真机仍未验证 |
-| B1b | demo 缝隙下界 85 -> 100 | 进行中 2026-09-07T02:35Z | 见 web_plan.md §8；**不许改 game.js 的 DEFAULT_GAP_RANGE**，否则四项 parity 全挂且云端修不回来 |
+| B1b | demo 缝隙下界 85 -> 100 | 已完成 | `DEMO_GAP_RANGE` 在 index.html，传给 you/aiGame/worker 三处；`DEFAULT_GAP_RANGE` 没动。守卫脚本 `web/tools/gap_check.mjs`，两份负向对照实测能红（见 2026-09-07 日志）。未跑 ai_eval，真机未验证 |
 | B2 | 管道不显示：写复现脚本 | 待办 | 只复现，不许改渲染代码 |
 | B3 | 管道不显示：修 | 待办 | 依赖 B2；B2 没复现就跳过 |
 | B4 | 设备矩阵 7 视口 | 待办 | |
@@ -502,5 +568,5 @@ Cloudflare Pages 控制台的实际部署操作（agent 没有账号访问权限
 | B6 | 误操作用例 5–7 + TESTING.md | 待办 | |
 | B7 | 操作提示按输入方式区分 | 待办 | 依赖 B4 |
 | B8 | 训练循环图 | 待办 | |
-| B9 | 页面数字核对 | 待办 | 放最后，前面可能改数字 |
+| B9 | 页面数字核对 | 待办 | 放最后，前面可能改数字。B1b 那条已查过：页面上**没有**"gap 85"/"85–165"文案，不用改；且**不要**因为 demo 难度变了去动"400 episodes 96.9"（那是训练分布上的基线） |
 | B10 | 全量巡检 + 总结 | 待办 | |

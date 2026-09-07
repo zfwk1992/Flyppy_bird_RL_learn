@@ -495,6 +495,29 @@ const $ = (id) => document.getElementById(id);
 const randomSeed = () => (Date.now() ^ (Math.random() * 0x7fffffff)) >>> 0;
 let seed = randomSeed();
 
+/* ------------------------------------------------------------------
+   demo 专用难度：缝隙下界抬到 100，上界不动。
+
+   为什么：85px 已经接近物理极限（鸟高 24 + 余量）。docs/EXPERIMENTS.md 里
+   gap 70–85 只占 10.5% 的管道，却贡献 53.5% 的死亡 —— 第一次点进来的人
+   多半会撞在这种缝上，然后以为游戏坏了。抬到 100 只是别把新玩家劝退。
+
+   **不要去改 game.js 的 DEFAULT_GAP_RANGE = [85, 165]。** 那是四项 parity
+   的基准：obs/nn/parity/worker 四个 check 都用默认值构造 FlappyGame，再和
+   Python 侧录好的参考文件逐位比对。改了默认值四项当场全挂，而重新生成参考
+   文件要 torch + pygame。所以覆盖只发生在 demo 这一侧。
+
+   这不算"改变 AI 的行为"：模型在 85–165 上训练，[100,165] 是它见过的分布的
+   子集，不存在分布外问题；策略、推理逻辑、frame_skip 一个字都没动。
+
+   **这个常量是唯一定义处，三处构造都从这里取**（you / aiGame / worker）。
+   worker 那份是通过 start 消息传过去的，不能在 worker 里写死 —— 写死了
+   worker_check.mjs（用默认值构造）就会挂。三处只要有一处不同，同一个 seed
+   就会长出**不同的管道序列**，左右两块画面不再是同一关；而且这种 bug 在
+   画面上极其隐蔽：两边都能正常玩，只是管道长得不一样。
+   ------------------------------------------------------------------ */
+const DEMO_GAP_RANGE = [100.0, 165.0];
+
 let you = null, aiGame = null;
 let youState = 'loading';       // loading | idle | playing | dead
 let flapQueued = false;
@@ -600,16 +623,18 @@ function beginRound(bundle) {
   // 传 null 就现开一局，worker 从头算。
   const b = bundle || { seed: randomSeed(), plan: [], ended: false };
   seed = b.seed;
-  you = new FlappyGame({ seed, hitmasks: HITMASKS });
+  you = new FlappyGame({ seed, hitmasks: HITMASKS, gapRange: DEMO_GAP_RANGE });
   you.reset();
-  aiGame = new FlappyGame({ seed, hitmasks: HITMASKS });
+  aiGame = new FlappyGame({ seed, hitmasks: HITMASKS, gapRange: DEMO_GAP_RANGE });
   aiGame.reset();
   youAlive = true; aiAlive = true;
   flapQueued = false;
   plan = b.plan; planSeed = seed; planEnded = b.ended; aiFrame = 0;
   prefetch = null;
   // 预取过的话 worker 已经在算这一局了，只要继续要；否则从头开一个
-  if (worker) worker.postMessage({ type: bundle ? 'want' : 'start', seed, want: LOOKAHEAD });
+  // gapRange 必须跟着 start 走：worker 里那一局要和这边的 you/aiGame 长出
+  // 同一串管道，否则 AI 是在另一关上做的决策。'want' 不带（那一局已经建好了）。
+  if (worker) worker.postMessage({ type: bundle ? 'want' : 'start', seed, want: LOOKAHEAD, gapRange: DEMO_GAP_RANGE });
   else if (aiPlayer) aiPlayer.reset();
   $('youLive').textContent = '0';
   $('aiLive').textContent = '0';
@@ -720,7 +745,7 @@ function stepBoth() {
       // 开头，让玩家点"再来一局"的时候不至于从零等起。
       if (worker && !prefetch) {
         prefetch = { seed: randomSeed(), plan: [], ended: false };
-        worker.postMessage({ type: 'start', seed: prefetch.seed, want: LOOKAHEAD });
+        worker.postMessage({ type: 'start', seed: prefetch.seed, want: LOOKAHEAD, gapRange: DEMO_GAP_RANGE });
       }
     }
     // 让 worker 始终保持大约 LOOKAHEAD 的余量。**玩家死了也要继续要** ——
@@ -771,6 +796,12 @@ function tick(now) {
 // 调试用：headless 里量缓冲跟不跟得上（stalls 应当接近 0）。不影响页面行为。
 window.__stats = () => ({ plan: plan.length, aiFrame, stalls, lastMs, ready,
   worker: !!worker, prefetch: prefetch ? prefetch.plan.length : -1 });
+
+// 调试用：把两局**实际生效**的 gapRange 暴露出来，供 web/tools/gap_check.mjs
+// 和 worker 收到的那份对账。读的是实例上的 this.gapRange，不是常量本身 ——
+// 这样"常量定义对了但某一处构造忘了传"也能被抓到。不影响页面行为。
+window.__gapInfo = () => ({ seed, constant: DEMO_GAP_RANGE,
+  you: you ? you.gapRange : null, ai: aiGame ? aiGame.gapRange : null });
 
 beginRound(null);
 setYouState('loading');
